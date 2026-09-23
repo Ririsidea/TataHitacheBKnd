@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets - never commit real credentials. .env.example stays tracked.
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Local-only generated secrets
+src/scripts/seeded-passwords.local.txt
+
+# Generated exports (SAP hand-off + per-employee daily exports)
+exports/
+
+# Build output
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Test coverage
+coverage/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Office lock/temp files (Word/WPS/LibreOffice)
+~$*
+.~lock.*#
