@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { runDailyEmployeeExports } = require('../controllers/sap.controller');
+const { runDailyEmployeeExports } = require('../services/orderExport.service');
 
 // Separate from - and does not touch - the existing 8 PM all-employees SAP
 // hand-off cron (sapExportCron.js). Runs once daily at 00:05 server time and
@@ -7,7 +7,7 @@ const { runDailyEmployeeExports } = require('../controllers/sap.controller');
 // be complete by the time this runs. A day with zero orders still gets a
 // recorded (0-order) export for every employee - that is expected, not an error.
 function scheduleEmployeeDailyExport() {
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('0 * * * *', async () => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     try {

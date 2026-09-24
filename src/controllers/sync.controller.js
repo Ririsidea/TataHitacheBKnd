@@ -1,5 +1,5 @@
 const { Product } = require('../models');
-const shopify = require('../services/shopify');
+const shopify = require('../services/shopify/client');
 const { deriveCategoryFromTitle } = require('../utils/categorize');
 
 async function syncProducts(req, res, next) {

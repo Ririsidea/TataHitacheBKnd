@@ -17,6 +17,8 @@ const Order = sequelize.define(
     trackingNumber: { type: DataTypes.STRING(255), field: 'tracking_number' },
     trackingUrl: { type: DataTypes.STRING(1000), field: 'tracking_url' },
     carrier: { type: DataTypes.STRING(255) },
+    channel: { type: DataTypes.STRING(50) },
+    crfId: { type: DataTypes.STRING(100), unique: true, field: 'crf_id' },
   },
   {
     tableName: 'orders',

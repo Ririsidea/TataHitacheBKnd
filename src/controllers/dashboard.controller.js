@@ -1,6 +1,7 @@
 const { WebhookLog, Order, OrderLineItem } = require('../models');
-const shopify = require('../services/shopify');
-const { mapShopifyProduct } = require('../utils/productMapper');
+const shopify = require('../services/shopify/client');
+const { mapShopifyProduct } = require('../services/shopify/productMapper');
+const { isOrderUpdatable } = require('../utils/orderStatus');
 
 async function getEvents(req, res, next) {
   try {
@@ -19,16 +20,26 @@ function isLocallyCancellable(order) {
   return order.status === 'open' && !order.fulfillmentStatus && !order.closedAt;
 }
 
-// Customers only ever see their own orders - the query itself is scoped to the
-// authenticated user, never "fetch everything and filter in the frontend".
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The list is always scoped to one employee, by the required ?employeeEmail= query
+// param - the query itself filters, never "fetch everything and filter in the frontend".
 async function getOrders(req, res, next) {
   try {
+    const employeeEmail = typeof req.query.employeeEmail === 'string' ? req.query.employeeEmail.trim().toLowerCase() : '';
+    if (!employeeEmail || employeeEmail.length > 255 || !EMAIL_PATTERN.test(employeeEmail)) {
+      return res.status(400).json({ success: false, message: 'A valid employeeEmail query parameter is required' });
+    }
     const orders = await Order.findAll({
-      where: { employeeEmail: req.user.email },
+      where: { employeeEmail },
       order: [['createdAt', 'DESC']],
       include: [{ model: OrderLineItem, as: 'lineItems' }],
     });
-    const data = orders.map((o) => ({ ...o.toJSON(), canCancel: isLocallyCancellable(o) }));
+    const data = orders.map((o) => ({
+      ...o.toJSON(),
+      canCancel: isLocallyCancellable(o),
+      canUpdate: isOrderUpdatable(o),
+    }));
     res.json({ success: true, data });
   } catch (err) {
     next(err);

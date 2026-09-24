@@ -3,7 +3,7 @@ const { sequelize } = require('../config/db');
 
 // One row per employee per calendar day of exported orders - the index behind
 // the "Employee Orders" export-history page. The file itself lives on disk
-// (see sap.controller.js); this table just tracks which day it covers, how
+// (written by services/orderExport.service.js); this table just tracks which day it covers, how
 // many orders it had, and who it belongs to.
 const DailyExport = sequelize.define(
   'DailyExport',

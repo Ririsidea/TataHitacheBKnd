@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { generateDailyExport } = require('../controllers/sap.controller');
+const { generateDailyExport } = require('../services/orderExport.service');
 
 // Runs once a day at 20:00 server time so the file is ready for SAP's
 // nightly batch pickup.

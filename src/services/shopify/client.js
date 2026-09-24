@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { shopify } = require('../config/env');
+const { shopify } = require('../../config/env');
 
 const storeDomain = shopify.storeDomain.replace(/^https?:\/\//, '');
 
@@ -21,6 +21,8 @@ async function graphqlRequest(query, variables = {}) {
   if (data.errors) {
     throw new Error(data.errors.map((e) => e.message).join('; '));
   }
+  // Any mutation (inventory adjust, order edit, ...) can change stock or prices.
+  if (/^\s*mutation\b/.test(query)) invalidateCatalogCache();
   return data.data;
 }
 
@@ -31,7 +33,7 @@ function extractNumericId(gid) {
 
 const CATALOG_PRODUCTS_QUERY = `
   query CatalogProducts($cursor: String) {
-    products(first: 50, after: $cursor, sortKey: TITLE) {
+    products(first: 100, after: $cursor, sortKey: TITLE) {
       edges {
         cursor
         node {
@@ -39,7 +41,7 @@ const CATALOG_PRODUCTS_QUERY = `
           title
           productType
           featuredImage { url }
-          variants(first: 5) {
+          variants(first: 1) {
             edges {
               node { id sku price inventoryQuantity }
             }
@@ -51,9 +53,7 @@ const CATALOG_PRODUCTS_QUERY = `
   }
 `;
 
-// Products (with their first variant's price/SKU/stock and category) pulled live
-// from Shopify - there is no local product cache, Shopify is the only source of truth.
-async function listProductsCatalog() {
+async function fetchCatalogFromShopify() {
   const products = [];
   let cursor = null;
   let hasNextPage = true;
@@ -67,6 +67,63 @@ async function listProductsCatalog() {
     hasNextPage = data.products.pageInfo.hasNextPage;
   }
 
+  return products;
+}
+
+// Reading the whole catalog is many sequential Shopify round trips, so it is cached in
+// memory (Shopify stays the source of truth):
+//   - younger than CATALOG_FRESH_MS: served as-is.
+//   - older, up to CATALOG_MAX_STALE_MS: served immediately while one background refresh runs.
+//   - anything that can change stock/prices (a GraphQL mutation, or an inventory/product
+//     webhook) calls invalidateCatalogCache(); the next read waits for a fresh copy.
+// Concurrent readers share a single in-flight Shopify fetch. Order creation never reads
+// this cache - it validates stock live via findVariantsBySku - so it cannot oversell.
+const CATALOG_FRESH_MS = 30 * 1000;
+const CATALOG_MAX_STALE_MS = 10 * 60 * 1000;
+const CATALOG_REFRESH_DEBOUNCE_MS = 1500;
+const catalog = { data: null, at: 0, version: 0, loadedVersion: -1, inflight: null, timer: null };
+
+function refreshCatalog() {
+  if (catalog.inflight) return catalog.inflight;
+  const startedAtVersion = catalog.version;
+  catalog.inflight = fetchCatalogFromShopify()
+    .then((products) => {
+      catalog.data = products;
+      catalog.at = Date.now();
+      catalog.loadedVersion = startedAtVersion;
+      return products;
+    })
+    .finally(() => {
+      catalog.inflight = null;
+    });
+  return catalog.inflight;
+}
+
+function invalidateCatalogCache() {
+  catalog.version += 1;
+  // Warm the next copy shortly after a burst of changes so the next reader finds it ready.
+  clearTimeout(catalog.timer);
+  catalog.timer = setTimeout(() => {
+    refreshCatalog().catch((err) => console.warn('[catalog] background refresh failed:', err.message));
+  }, CATALOG_REFRESH_DEBOUNCE_MS);
+  catalog.timer.unref?.();
+}
+
+async function listProductsCatalog() {
+  const isCurrent = catalog.data && catalog.loadedVersion === catalog.version;
+  const age = Date.now() - catalog.at;
+  if (isCurrent && age < CATALOG_FRESH_MS) return catalog.data;
+  if (isCurrent && age < CATALOG_MAX_STALE_MS) {
+    refreshCatalog().catch((err) => console.warn('[catalog] background refresh failed:', err.message));
+    return catalog.data;
+  }
+
+  let products;
+  // A second pass covers a change that landed while the first fetch was in flight.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    products = await refreshCatalog();
+    if (catalog.loadedVersion === catalog.version) break;
+  }
   return products;
 }
 
@@ -140,6 +197,7 @@ async function createDraftOrder(draftOrderPayload) {
 
 async function completeDraftOrder(draftOrderId) {
   const { data } = await client.put(`/draft_orders/${draftOrderId}/complete.json`);
+  invalidateCatalogCache(); // completing an order deducts stock
   return data.draft_order;
 }
 
@@ -162,6 +220,7 @@ async function getOrder(orderId) {
 // restockInventoryForOrder below, which is the actual guarantee we rely on).
 async function cancelOrder(orderId, { restock = true, reason = 'other' } = {}) {
   const { data } = await client.post(`/orders/${orderId}/cancel.json`, { restock, reason });
+  invalidateCatalogCache(); // cancelling can hand stock back
   return data.order;
 }
 
@@ -247,6 +306,7 @@ async function restockInventoryForOrder(lineItems) {
 }
 
 module.exports = {
+  graphqlRequest,
   listProducts,
   listInventoryLevels,
   createDraftOrder,
@@ -256,6 +316,7 @@ module.exports = {
   cancelOrder,
   restockInventoryForOrder,
   listProductsCatalog,
+  invalidateCatalogCache,
   findVariantsBySku,
   getProductDetail,
   extractNumericId,

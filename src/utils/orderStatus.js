@@ -10,4 +10,10 @@ function shopifyOrderStatusLabel(shopifyOrder) {
   return 'OPEN';
 }
 
-module.exports = { shopifyOrderStatusLabel };
+// Orders that are cancelled or refunded no longer accept contact/tracking edits.
+// Used by the update endpoint (authoritative) and the dashboard list (UI hint).
+function isOrderUpdatable(order) {
+  return !['cancelled', 'refunded'].includes(order.status);
+}
+
+module.exports = { shopifyOrderStatusLabel, isOrderUpdatable };

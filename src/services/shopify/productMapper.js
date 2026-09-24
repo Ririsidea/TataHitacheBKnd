@@ -1,5 +1,5 @@
-const shopify = require('../services/shopify');
-const { deriveCategoryFromTitle } = require('./categorize');
+const shopify = require('./client');
+const { deriveCategoryFromTitle } = require('../../utils/categorize');
 
 // Normalizes a live Shopify GraphQL product node (see shopify.listProductsCatalog)
 // into the flat shape the frontend expects. Only the first variant is used, matching

@@ -6,7 +6,8 @@ const healthRoutes = require('./routes/health.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const authRoutes = require('./routes/auth.routes');
 const mapRoutes = require('./routes/map.routes');
-const dashboardRoutes = require('./routes/dashboard.routes');
+const ordersRoutes = require('./routes/orders.routes');
+const dashboardRoutes =require('./routes/dashboard.routes');
 const sapRoutes = require('./routes/sap.routes');
 const adminRoutes = require('./routes/admin.routes');
 const authenticate = require('./middleware/authenticate');
@@ -15,7 +16,15 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
 
-app.use(cors({ origin: clientUrl }));
+const corsOptions = {
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'ngrok-skip-browser-warning', 'Accept'],
+};
+
+// Express 5 rejects a bare '*' route, and this middleware already answers OPTIONS preflights.
+app.use(cors(corsOptions));
 
 // Shopify webhooks are mounted before the JSON body parser: they need the
 // raw request body (applied per-route inside webhookRoutes) to verify the
@@ -29,8 +38,12 @@ app.use('/exports', express.static(path.resolve(sap.localDir)));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/map', authenticate, mapRoutes);
-app.use('/api/dashboard', authenticate, dashboardRoutes);
+// Shopify-related routes authenticate per route with the MAP API key (x-api-key);
+// see map.routes.js / orders.routes.js / dashboard.routes.js. JWT stays on auth/sap/admin
+// (and the dashboard events feed).
+app.use('/api/map', mapRoutes);
+app.use('/api/orders', ordersRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/sap', authenticate, sapRoutes);
 app.use('/api/admin', authenticate, requireAdmin, adminRoutes);
 
