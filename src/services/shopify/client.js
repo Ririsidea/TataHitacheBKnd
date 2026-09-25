@@ -196,7 +196,11 @@ async function createDraftOrder(draftOrderPayload) {
 }
 
 async function completeDraftOrder(draftOrderId) {
-  const { data } = await client.put(`/draft_orders/${draftOrderId}/complete.json`);
+  // payment_pending=true: the order is created with payment status "pending" instead of
+  // Shopify's default of marking a completed draft order as paid. Stock is still deducted.
+  const { data } = await client.put(`/draft_orders/${draftOrderId}/complete.json`, undefined, {
+    params: { payment_pending: true },
+  });
   invalidateCatalogCache(); // completing an order deducts stock
   return data.draft_order;
 }
@@ -211,6 +215,16 @@ async function deleteDraftOrder(draftOrderId) {
 async function getOrder(orderId) {
   const { data } = await client.get(`/orders/${orderId}.json`);
   return data.order;
+}
+
+// Several orders in ONE request (Shopify allows up to 250 ids); status=any so cancelled and
+// archived orders come back too. Used by the background reconciler.
+async function listOrdersByIds(orderIds) {
+  if (!orderIds.length) return [];
+  const { data } = await client.get('/orders.json', {
+    params: { ids: orderIds.join(','), status: 'any', limit: 250 },
+  });
+  return data.orders;
 }
 
 // Compensating action for the rare race where two concurrent orders both pass their
@@ -313,6 +327,7 @@ module.exports = {
   completeDraftOrder,
   deleteDraftOrder,
   getOrder,
+  listOrdersByIds,
   cancelOrder,
   restockInventoryForOrder,
   listProductsCatalog,

@@ -1,6 +1,6 @@
 const { sequelize } = require('../config/db');
 const { Order, OrderLineItem, WebhookLog, InventorySnapshot } = require('../models');
-const { shopifyOrderStatusLabel } = require('../utils/orderStatus');
+const { shopifyOrderStatusLabel, shopifyDeliveryStatus, shopifyTracking } = require('../utils/orderStatus');
 const shopify = require('../services/shopify/client');
 const { syncLocalOrderFromShopify } = require('../services/orderSync.service');
 
@@ -31,6 +31,18 @@ async function replaceLineItems(orderId, shopifyLineItems, transaction) {
   const items = mapLineItems(shopifyLineItems).map((li) => ({ ...li, orderId }));
   if (items.length) {
     await OrderLineItem.bulkCreate(items, { transaction });
+  }
+}
+
+// A fulfillment object's own status ("success", "pending", ...) is not the order's
+// fulfilment status, so the fulfillment webhooks re-read the order and mirror it in full -
+// the order then always carries Shopify's "fulfilled" / "partial" / empty value.
+async function mirrorOrderFromShopify(orderId) {
+  try {
+    const shopifyOrder = await shopify.getOrder(orderId);
+    await syncLocalOrderFromShopify(shopifyOrder);
+  } catch (err) {
+    console.error('Could not mirror order', orderId, 'from Shopify:', err.message);
   }
 }
 
@@ -119,6 +131,10 @@ async function orderUpdated(req, res) {
         fulfillmentStatus: payload.fulfillment_status,
         closedAt: payload.closed_at || null,
         totalPrice: payload.total_price !== undefined ? Number(payload.total_price) : undefined,
+        // Delivery + tracking come from the payload's fulfillments (shipment_status), when sent.
+        ...(Array.isArray(payload.fulfillments)
+          ? { deliveryStatus: shopifyDeliveryStatus(payload), ...shopifyTracking(payload) }
+          : {}),
       };
       // A field missing from the payload is left as-is rather than blanked.
       Object.keys(fields).forEach((key) => fields[key] === undefined && delete fields[key]);
@@ -160,7 +176,11 @@ async function orderPaid(req, res) {
   const payload = req.shopifyPayload;
   respondThenProcess(res, async () => {
     await logWebhook('orders/paid', payload);
-    await Order.update({ financialStatus: 'PENDING' }, { where: { shopifyOrderId: String(payload.id) } });
+    // Mirror Shopify's own payment status ("paid") so the app shows the order as Paid.
+    await Order.update(
+      { financialStatus: payload.financial_status },
+      { where: { shopifyOrderId: String(payload.id) } }
+    );
   });
 }
 
@@ -168,8 +188,13 @@ async function orderFulfilled(req, res) {
   const payload = req.shopifyPayload;
   respondThenProcess(res, async () => {
     await logWebhook('orders/fulfilled', payload);
+    // Status moves together with the fulfilment status, so the order can never read
+    // "open" while already fulfilled.
     await Order.update(
-      { fulfillmentStatus: 'fulfilled' },
+      {
+        status: shopifyOrderStatusLabel(payload).toLowerCase(),
+        fulfillmentStatus: payload.fulfillment_status || 'fulfilled',
+      },
       { where: { shopifyOrderId: String(payload.id) } }
     );
   });
@@ -184,10 +209,10 @@ async function fulfillmentCreate(req, res) {
         trackingNumber: payload.tracking_number,
         trackingUrl: payload.tracking_url,
         carrier: payload.tracking_company,
-        fulfillmentStatus: payload.status,
       },
       { where: { shopifyOrderId: String(payload.order_id) } }
     );
+    await mirrorOrderFromShopify(payload.order_id);
   });
 }
 
@@ -200,10 +225,21 @@ async function fulfillmentUpdate(req, res) {
         trackingNumber: payload.tracking_number,
         trackingUrl: payload.tracking_url,
         carrier: payload.tracking_company,
-        fulfillmentStatus: payload.status,
       },
       { where: { shopifyOrderId: String(payload.order_id) } }
     );
+    await mirrorOrderFromShopify(payload.order_id);
+  });
+}
+
+// fulfillment_events/create: Shopify / the carrier moved the shipment (in transit, out for
+// delivery, delivered, ...). The event only names the order, so the order is re-read and mirrored.
+async function fulfillmentEventCreate(req, res) {
+  const payload = req.shopifyPayload;
+  respondThenProcess(res, async () => {
+    await logWebhook('fulfillment_events/create', payload);
+    if (!payload.order_id) return;
+    await mirrorOrderFromShopify(payload.order_id);
   });
 }
 
@@ -233,5 +269,6 @@ module.exports = {
   orderFulfilled,
   fulfillmentCreate,
   fulfillmentUpdate,
+  fulfillmentEventCreate,
   refundCreate,
 };

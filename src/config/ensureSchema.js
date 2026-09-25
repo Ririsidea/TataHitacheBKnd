@@ -2,10 +2,11 @@ const { sequelize } = require('./db');
 
 // Additive, idempotent schema upgrade run at startup (the project has no migration tool;
 // schema.sql is the source of truth for fresh installs, this brings an existing database
-// up to date). Only ever ADDs nullable columns - never alters or drops data.
+// up to date). Adds nullable columns, and drops the retired orders.crf_id column.
 //   orders.channel  - where the order came from (default "MAP")
-//   orders.crf_id   - caller-supplied CRF id; UNIQUE so the same CRF can never create two
-//                     orders (MySQL allows many NULLs, so orders without one are unaffected)
+//   orders.delivery_status - carrier / Shopify delivery state of the shipment (in_transit,
+//                     out_for_delivery, delivered, ...), mirrored from Shopify
+//   orders.crf_id   - retired (the idempotency key is no longer used); dropped if still present
 async function ensureOrderColumns() {
   const [rows] = await sequelize.query(
     "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'"
@@ -16,9 +17,15 @@ async function ensureOrderColumns() {
     await sequelize.query('ALTER TABLE orders ADD COLUMN channel VARCHAR(50) NULL');
     console.log('[schema] added orders.channel');
   }
-  if (!have.has('crf_id')) {
-    await sequelize.query('ALTER TABLE orders ADD COLUMN crf_id VARCHAR(100) NULL, ADD UNIQUE KEY uq_orders_crf_id (crf_id)');
-    console.log('[schema] added orders.crf_id');
+  if (!have.has('delivery_status')) {
+    await sequelize.query('ALTER TABLE orders ADD COLUMN delivery_status VARCHAR(50) NULL');
+    console.log('[schema] added orders.delivery_status');
+  }
+  // Nothing reads or writes this column any more. Dropping it also drops its unique key,
+  // and it only runs when the column exists, so restarts are a no-op.
+  if (have.has('crf_id')) {
+    await sequelize.query('ALTER TABLE orders DROP COLUMN crf_id');
+    console.log('[schema] dropped orders.crf_id');
   }
 }
 

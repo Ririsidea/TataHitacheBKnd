@@ -30,6 +30,7 @@ const ORDER_FOR_EDIT_QUERY = `
       id
       cancelledAt
       closedAt
+      displayFulfillmentStatus
       email
       phone
       note
@@ -62,6 +63,7 @@ async function getOrderForEdit(shopifyOrderId) {
     id: order.id,
     cancelledAt: order.cancelledAt,
     closedAt: order.closedAt,
+    fulfillmentStatus: order.displayFulfillmentStatus,
     email: order.email,
     phone: order.phone,
     note: order.note,

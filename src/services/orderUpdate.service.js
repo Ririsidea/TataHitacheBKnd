@@ -14,6 +14,7 @@ const { Order, OrderLineItem } = require('../models');
 const shopify = require('./shopify/client');
 const shopifyOrderEdit = require('./shopify/orderEdit');
 const { syncLocalOrderFromShopify } = require('./orderSync.service');
+const { isOrderFulfilled, LOCKED_MESSAGE } = require('../utils/orderStatus');
 
 const ADDRESS_FIELDS = ['address1', 'address2', 'city', 'province', 'zip', 'country', 'firstName', 'lastName', 'phone'];
 const TOP_LEVEL_FIELDS = ['items', 'shippingAddress', 'phone', 'email', 'note'];
@@ -260,6 +261,8 @@ function createOrderUpdateService(deps) {
     const input = validateInput(body); // 1. 400
     const order = await loadOrderForUpdate(orderId); // 2. 404
     if (!order.shopifyOrderId) throw httpError(409, 'Order cannot be updated');
+    // A fulfilled order is final: refused before it is claimed or Shopify is contacted.
+    if (isOrderFulfilled(order)) throw httpError(409, LOCKED_MESSAGE);
     await claim(order); // 2. 409 (not open / busy)
 
     try {
@@ -268,6 +271,8 @@ function createOrderUpdateService(deps) {
       if (!live) throw httpError(409, 'Order was not found in Shopify');
       if (live.cancelledAt) throw httpError(409, 'Order cannot be updated - it is cancelled in Shopify');
       if (live.closedAt) throw httpError(409, 'Order cannot be updated - it is closed in Shopify');
+      // Local status can lag a webhook, so a fulfilment Shopify already has is checked live too.
+      if (live.fulfillmentStatus === 'FULFILLED') throw httpError(409, LOCKED_MESSAGE);
 
       // 4. per-SKU diff
       const plan = input.items ? planItemChanges(input.items, live.lineItems) : [];
@@ -374,8 +379,10 @@ function createOrderUpdateService(deps) {
         };
       });
 
+    const locked = live.fulfillmentStatus === 'FULFILLED' || isOrderFulfilled(order);
     let readOnlyReason = null;
-    if (live.cancelledAt) readOnlyReason = 'Order is cancelled in Shopify';
+    if (locked) readOnlyReason = 'Order is fulfilled and locked - it can no longer be edited';
+    else if (live.cancelledAt) readOnlyReason = 'Order is cancelled in Shopify';
     else if (live.closedAt) readOnlyReason = 'Order is closed in Shopify';
     else if (order.status === 'updating') readOnlyReason = 'Order is being modified, try again in a moment';
     else if (order.status !== 'open') readOnlyReason = `Order is ${String(order.status).toUpperCase()} and can no longer be edited`;
@@ -388,6 +395,7 @@ function createOrderUpdateService(deps) {
       fulfillmentStatus: order.fulfillmentStatus,
       totalPrice: order.totalPrice,
       editable: readOnlyReason === null,
+      locked,
       readOnlyReason,
       email: live.email || null,
       phone: live.phone || null,

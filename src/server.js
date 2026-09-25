@@ -4,6 +4,7 @@ const connectDB = require('./config/db');
 const { ensureOrderColumns } = require('./config/ensureSchema');
 // const scheduleSapExport = require('./jobs/sapExportCron');
 const scheduleEmployeeDailyExport = require('./jobs/employeeDailyExportCron');
+const scheduleOrderReconcile = require('./jobs/orderReconcileCron');
 const shopifyClient = require('./services/shopify/client');
 
 // The three credentials must stay separate: the MAP external API key is not a Shopify
@@ -21,6 +22,7 @@ async function start() {
   await connectDB();
   await ensureOrderColumns();
   scheduleEmployeeDailyExport();
+  scheduleOrderReconcile();
 
   app.listen(port, () => {
     console.log(`Server running in ${nodeEnv} mode on port ${port}`);

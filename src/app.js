@@ -6,7 +6,6 @@ const healthRoutes = require('./routes/health.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const authRoutes = require('./routes/auth.routes');
 const mapRoutes = require('./routes/map.routes');
-const ordersRoutes = require('./routes/orders.routes');
 const dashboardRoutes =require('./routes/dashboard.routes');
 const sapRoutes = require('./routes/sap.routes');
 const adminRoutes = require('./routes/admin.routes');
@@ -39,10 +38,9 @@ app.use('/exports', express.static(path.resolve(sap.localDir)));
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
 // Shopify-related routes authenticate per route with the MAP API key (x-api-key);
-// see map.routes.js / orders.routes.js / dashboard.routes.js. JWT stays on auth/sap/admin
+// see map.routes.js / dashboard.routes.js. JWT stays on auth/sap/admin
 // (and the dashboard events feed).
 app.use('/api/map', mapRoutes);
-app.use('/api/orders', ordersRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/sap', authenticate, sapRoutes);
 app.use('/api/admin', authenticate, requireAdmin, adminRoutes);

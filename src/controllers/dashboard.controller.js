@@ -1,7 +1,8 @@
 const { WebhookLog, Order, OrderLineItem } = require('../models');
 const shopify = require('../services/shopify/client');
 const { mapShopifyProduct } = require('../services/shopify/productMapper');
-const { isOrderUpdatable } = require('../utils/orderStatus');
+const { orderFlags } = require('../utils/orderStatus');
+const orderEvents = require('../services/orderEvents');
 
 async function getEvents(req, res, next) {
   try {
@@ -11,13 +12,6 @@ async function getEvents(req, res, next) {
   } catch (err) {
     next(err);
   }
-}
-
-// A cancel button is only worth showing for an order that's still open (not yet
-// fulfilled or closed) - the actual cancel request re-validates this live against
-// Shopify regardless, this is just a fast, non-authoritative signal for the UI.
-function isLocallyCancellable(order) {
-  return order.status === 'open' && !order.fulfillmentStatus && !order.closedAt;
 }
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -35,15 +29,43 @@ async function getOrders(req, res, next) {
       order: [['createdAt', 'DESC']],
       include: [{ model: OrderLineItem, as: 'lineItems' }],
     });
-    const data = orders.map((o) => ({
-      ...o.toJSON(),
-      canCancel: isLocallyCancellable(o),
-      canUpdate: isOrderUpdatable(o),
-    }));
+    const data = orders.map((o) => ({ ...o.toJSON(), ...orderFlags(o) }));
     res.json({ success: true, data });
   } catch (err) {
     next(err);
   }
+}
+
+const HEARTBEAT_MS = 25000;
+
+// Server-Sent Events: pushes an "order" event whenever an order's status changes, however it
+// changed (admin action, cancel, edit, Shopify webhook), so open screens update without a
+// refresh. ?employeeEmail= limits the stream to that employee's orders (the Orders page);
+// without it every order is streamed (the admin Order Management page).
+// The comment-line heartbeat keeps proxies (ngrok, load balancers) from closing an idle stream.
+function streamOrderEvents(req, res) {
+  const employeeEmail = typeof req.query.employeeEmail === 'string' ? req.query.employeeEmail.trim().toLowerCase() : '';
+
+  res.status(200).set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 3000\n\n');
+  res.write('event: ready\ndata: {}\n\n');
+
+  const unsubscribe = orderEvents.subscribe((event) => {
+    if (employeeEmail && String(event.employeeEmail || '').toLowerCase() !== employeeEmail) return;
+    res.write(`event: order\ndata: ${JSON.stringify(event)}\n\n`);
+  });
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 }
 
 async function getProducts(req, res, next) {
@@ -56,4 +78,4 @@ async function getProducts(req, res, next) {
   }
 }
 
-module.exports = { getEvents, getOrders, getProducts };
+module.exports = { getEvents, getOrders, getProducts, streamOrderEvents };

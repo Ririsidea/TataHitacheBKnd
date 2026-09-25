@@ -1,7 +1,7 @@
 const { Order, OrderLineItem, User } = require('../models');
 const shopify = require('../services/shopify/client');
 const { mapShopifyProduct, mapProductDetail } = require('../services/shopify/productMapper');
-const { shopifyOrderStatusLabel } = require('../utils/orderStatus');
+const { shopifyOrderStatusLabel, isOrderFulfilled, LOCKED_MESSAGE } = require('../utils/orderStatus');
 
 async function getStock(req, res, next) {
   try {
@@ -92,22 +92,10 @@ function parseOrderIdentity(body) {
     if (!channel || channel.length > 50) return { error: 'channel must be a non-empty string of at most 50 characters' };
   }
 
-  let crfId;
-  if (body.crfId !== undefined && body.crfId !== null) {
-    crfId = typeof body.crfId === 'string' ? body.crfId.trim() : '';
-    if (!crfId || crfId.length > 100) return { error: 'crfId must be a non-empty string of at most 100 characters' };
-  }
-
-  return { name, email, channel, crfId };
+  return { name, email, channel };
 }
 
-// A crfId that is being processed right now (single process): a repeated call waits for
-// the first one and then gets its order back instead of placing a second Shopify order.
-const inflightCrf = new Map();
-
 async function createOrder(req, res, next) {
-  let releaseCrf;
-  let registeredCrfId;
   try {
     const { items, shippingAddress, phone } = req.body;
 
@@ -119,30 +107,16 @@ async function createOrder(req, res, next) {
     }
 
     // The order is placed for the employee named in the request (employeeName /
-    // employeeEmail, plus optional channel and crfId) - this route is authenticated by
+    // employeeEmail, plus optional channel) - this route is authenticated by
     // the MAP API key, so there is no logged-in user to read them from.
     const identity = parseOrderIdentity(req.body);
     if (identity.error) {
       return res.status(400).json({ success: false, message: identity.error });
     }
     const employee = { name: identity.name, email: identity.email, phone: phone || undefined };
-    const { channel, crfId } = identity;
+    const { channel } = identity;
 
     const includeLineItems = [{ model: OrderLineItem, as: 'lineItems' }];
-
-    // Idempotency: the same crfId never creates a second order - return the existing one.
-    // The in-flight claim is taken in the same tick as the "is anyone else on it?" check
-    // (no await in between), so concurrent duplicates cannot all slip through.
-    if (crfId) {
-      while (inflightCrf.has(crfId)) await inflightCrf.get(crfId);
-      registeredCrfId = crfId;
-      inflightCrf.set(crfId, new Promise((resolve) => { releaseCrf = resolve; }));
-
-      const existing = await Order.findOne({ where: { crfId }, include: includeLineItems });
-      if (existing) {
-        return res.status(200).json({ success: true, message: 'Order already exists for this crfId', data: existing });
-      }
-    }
 
     // The mobile number is the one piece of employee detail we don't already have, so
     // it is saved back to the employee's profile (when one exists) and future checkouts
@@ -182,7 +156,6 @@ async function createOrder(req, res, next) {
         { name: 'employeeEmail', value: employee.email },
         { name: 'employeePhone', value: employee.phone || '' },
         { name: 'channel', value: channel },
-        ...(crfId ? [{ name: 'crfId', value: crfId }] : []),
       ],
       tags: 'MAP',
       // The actual Shopify-side inventory deduction happens on completion, gated by
@@ -262,7 +235,6 @@ async function createOrder(req, res, next) {
       fulfillmentStatus: shopifyOrder.fulfillment_status,
       totalPrice: shopifyOrder.total_price ? Number(shopifyOrder.total_price) : undefined,
       channel,
-      crfId,
     });
 
     const orderLineItems = (shopifyOrder.line_items || []).map((li) => ({
@@ -280,18 +252,7 @@ async function createOrder(req, res, next) {
 
     res.status(201).json({ success: true, data: createdOrder });
   } catch (err) {
-    // Only reachable if another process created the same crfId between the check and here.
-    if (err.name === 'SequelizeUniqueConstraintError' && registeredCrfId) {
-      console.error('[inventory] CRITICAL - duplicate crfId raced past the check', registeredCrfId);
-      err.statusCode = 409;
-      err.message = 'An order for this crfId already exists';
-    }
     next(err);
-  } finally {
-    if (registeredCrfId) {
-      inflightCrf.delete(registeredCrfId);
-      if (releaseCrf) releaseCrf();
-    }
   }
 }
 
@@ -309,6 +270,7 @@ async function getOrderStatus(req, res, next) {
         status: order.status,
         financialStatus: order.financialStatus,
         fulfillmentStatus: order.fulfillmentStatus,
+        deliveryStatus: order.deliveryStatus,
         trackingNumber: order.trackingNumber,
         trackingUrl: order.trackingUrl,
         carrier: order.carrier,
@@ -336,6 +298,12 @@ async function cancelOrder(req, res, next) {
     });
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // A fulfilled order is final and locked. Refused before anything is claimed or sent to
+    // Shopify, so the order is left exactly as it is.
+    if (isOrderFulfilled(order)) {
+      return res.status(409).json({ success: false, locked: true, message: LOCKED_MESSAGE });
     }
 
     // Atomic local gate: only one request can flip this order from 'open' to
