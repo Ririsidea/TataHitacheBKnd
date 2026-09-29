@@ -6,12 +6,14 @@ import type { UserInstance } from '../models/User';
 import { jwtSecret, admin } from '../config/env';
 import { ConfigError } from '../utils/errors';
 import { validatePassword } from '../utils/passwordPolicy';
+import { isValidEmployeeId } from '../utils/employeeId';
 
 const TOKEN_TTL = '8h';
 const SALT_ROUNDS = 12;
 
 interface PublicUser {
   email: string;
+  employeeId: string;
   name: string | null;
   phone: string | null;
   mustResetPassword: boolean;
@@ -21,6 +23,7 @@ interface PublicUser {
 function toPublicUser(user: UserInstance): PublicUser {
   return {
     email: user.email,
+    employeeId: user.employeeId,
     name: user.name,
     phone: user.phone,
     mustResetPassword: user.mustResetPassword,
@@ -29,35 +32,65 @@ function toPublicUser(user: UserInstance): PublicUser {
   };
 }
 
+// Accepts:
+//   { loginType: 'email', email, password }
+//   { loginType: 'employeeId', employeeId, password }
+//   { email, password }        (no loginType - old clients - treated as email)
+//   { employeeId, password }   (no loginType, no email - treated as employeeId)
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, password } = (req.body ?? {}) as { email?: unknown; password?: unknown };
-    if (!email || !password) {
-      res.status(400).json({ success: false, message: 'Email and password are required' });
+    const body = (req.body ?? {}) as { loginType?: unknown; email?: unknown; employeeId?: unknown; password?: unknown };
+
+    if (body.loginType !== undefined && body.loginType !== 'email' && body.loginType !== 'employeeId') {
+      res.status(400).json({ success: false, message: 'loginType must be email or employeeId' });
       return;
     }
 
-    const user = await User.findOne({ where: { email: String(email).trim().toLowerCase() } });
+    const hasEmail = typeof body.email === 'string' && body.email.trim() !== '';
+    const hasEmployeeId = typeof body.employeeId === 'string' && body.employeeId.trim() !== '';
+    const loginType: 'email' | 'employeeId' =
+      body.loginType === 'email' || body.loginType === 'employeeId' ? body.loginType : hasEmail ? 'email' : hasEmployeeId ? 'employeeId' : 'email';
 
-    // Same generic message whether the email is unknown or the password is wrong,
-    // so a caller can never learn which one was incorrect.
+    // Same generic message for every kind of failure past this point - unknown
+    // identifier or wrong password - so a caller never learns which one was wrong.
     const genericFailure = (): void => {
-      res.status(401).json({ success: false, message: 'Invalid email or password' });
+      res.status(401).json({ success: false, message: 'Invalid credentials' });
     };
+
+    let user: UserInstance | null;
+    if (loginType === 'employeeId') {
+      const employeeId = typeof body.employeeId === 'string' ? body.employeeId.trim() : '';
+      if (!employeeId || !body.password) {
+        res.status(400).json({ success: false, message: 'Employee ID and password are required' });
+        return;
+      }
+      if (!isValidEmployeeId(employeeId)) {
+        res.status(400).json({ success: false, message: 'employeeId must be exactly 5 digits' });
+        return;
+      }
+      user = await User.findOne({ where: { employeeId } });
+    } else {
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      if (!email || !body.password) {
+        res.status(400).json({ success: false, message: 'Email and password are required' });
+        return;
+      }
+      user = await User.findOne({ where: { email } });
+    }
 
     if (!user) {
       genericFailure();
       return;
     }
 
-    const matches = await bcrypt.compare(String(password), user.passwordHash);
+    const matches = await bcrypt.compare(String(body.password), user.passwordHash);
     if (!matches) {
       genericFailure();
       return;
     }
 
     if (!jwtSecret) throw new ConfigError('JWT_SECRET is not set');
-    const token = jwt.sign({ userId: user.id, email: user.email }, jwtSecret, { expiresIn: TOKEN_TTL });
+    const token = jwt.sign({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion }, jwtSecret, { expiresIn: TOKEN_TTL });
 
     res.json({ success: true, data: { token, user: toPublicUser(user) } });
   } catch (err) {

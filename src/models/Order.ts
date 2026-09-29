@@ -5,9 +5,11 @@ import type { OrderLineItemInstance } from './OrderLineItem';
 export interface OrderAttributes {
   id: number;
   shopifyOrderId: string | null;
-  employeeName: string | null;
-  employeeEmail: string | null;
-  employeePhone: string | null;
+  // The employee the order was placed for. The columns keep their employee_* names; the API
+  // (and this model) call them name / email / phone.
+  name: string | null;
+  email: string | null;
+  phone: string | null;
   status: string;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
@@ -35,9 +37,9 @@ const Order = sequelize.define<OrderInstance>(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     shopifyOrderId: { type: DataTypes.STRING(255), unique: true, field: 'shopify_order_id' },
-    employeeName: { type: DataTypes.STRING(255), field: 'employee_name' },
-    employeeEmail: { type: DataTypes.STRING(255), field: 'employee_email' },
-    employeePhone: { type: DataTypes.STRING(30), field: 'employee_phone' },
+    name: { type: DataTypes.STRING(255), field: 'employee_name' },
+    email: { type: DataTypes.STRING(255), field: 'employee_email' },
+    phone: { type: DataTypes.STRING(30), field: 'employee_phone' },
     status: { type: DataTypes.STRING(50), defaultValue: 'open' },
     financialStatus: { type: DataTypes.STRING(50), field: 'financial_status' },
     fulfillmentStatus: { type: DataTypes.STRING(50), field: 'fulfillment_status' },

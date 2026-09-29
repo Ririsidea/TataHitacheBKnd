@@ -50,6 +50,5 @@ export const alert: { webhookUrl: string | undefined } = {
 };
 
 export const sap = {
-  exportMode: process.env.SAP_EXPORT_MODE || 'local',
   localDir: process.env.SAP_EXPORT_LOCAL_DIR || './exports',
 };

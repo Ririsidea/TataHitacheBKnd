@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.get('/employees', controller.listEmployees);
 router.post('/employees', controller.addEmployee);
+router.put('/employees/:id', controller.updateEmployee);
 router.delete('/employees/:id', controller.deleteEmployee);
 
 // Order Management: all orders, and the pending -> paid -> fulfilled status actions.

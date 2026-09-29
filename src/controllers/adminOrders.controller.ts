@@ -1,21 +1,23 @@
 import type { NextFunction, Request, Response } from 'express';
 import * as orderStatusService from '../services/orderStatus.service';
 import { parseOrderListQuery, listOrders as listOrdersPage } from '../services/orderList.service';
+import { warnDeprecatedNames } from '../utils/fieldAliases';
 
 // Admin order management (mounted under /api/admin, so authenticate + requireAdmin already ran).
 // :shopifyOrderId is the Shopify order id, the same id the cancel endpoint takes.
 
-// Every order, newest first, one page at a time. Optional: q (Shopify order id / employee name /
-// email), employeeEmail, status, fromDate, toDate, page.
+// Every order, newest first, one cursor page at a time. Optional: q (Shopify order id / employee
+// name / email), email (alias: the old employeeEmail), status, fromDate, toDate, limit, after, before.
 export async function listOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const parsed = parseOrderListQuery(req.query, { allowSearch: true });
+    warnDeprecatedNames(req, req.query, 'query parameter');
+    const parsed = parseOrderListQuery(req.query, { allowSearch: true, allowLegacyEmailAlias: true });
     if (parsed.error !== undefined) {
       res.status(400).json({ success: false, message: parsed.error });
       return;
     }
-    const { data, meta } = await listOrdersPage(parsed.params);
-    res.json({ success: true, data, meta });
+    const { data, pageInfo } = await listOrdersPage(parsed.params);
+    res.json({ success: true, data, pageInfo });
   } catch (err) {
     next(err);
   }

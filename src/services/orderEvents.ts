@@ -16,7 +16,7 @@ emitter.setMaxListeners(0); // one listener per open browser tab
 const EVENT_FIELDS = [
   'id',
   'shopifyOrderId',
-  'employeeEmail',
+  'email',
   'status',
   'financialStatus',
   'fulfillmentStatus',
@@ -30,7 +30,7 @@ const EVENT_FIELDS = [
 ] as const;
 
 export type OrderEvent = { [K in (typeof EVENT_FIELDS)[number]]: unknown } & OrderFlags & {
-    employeeEmail: string | null;
+    email: string | null;
   };
 
 type PlainOrder = Record<string, unknown> & OrderLike;

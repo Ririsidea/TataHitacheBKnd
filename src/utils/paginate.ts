@@ -1,10 +1,13 @@
 // The one pagination contract every list endpoint follows (product list, orders, events, SAP
-// exports, employees): a FIXED page of PAGE_SIZE rows, chosen with ?page=, answered as
-//   { success, data: [...rows], meta: { page, limit, total, totalPages, hasNextPage, hasPrevPage, filters } }
-// A page past the end is not an error (200, empty data, correct meta); a bad ?page= is a 400.
-// There is no page-size parameter and no "return everything" mode.
+// exports, employees): cursor pagination, chosen with ?limit= (default 50) and ?after= / ?before=
+// (opaque cursors, mutually exclusive), answered as
+//   { success, data: [...rows], pageInfo: { limit, total, hasNextPage, hasPreviousPage,
+//                                             nextCursor, previousCursor, filters } }
+// There is no ?page= any more - a page past the end is not an error (200, empty data, correct
+// pageInfo); a bad ?limit=/?after=/?before= is a 400.
 
-export const PAGE_SIZE = 50;
+export const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
 
 const INTEGER = /^\d+$/;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -13,13 +16,16 @@ const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{
 /** A parsed query string as Express hands it over (repeated parameters arrive as arrays). */
 export type Query = Record<string, unknown>;
 
-export interface PageMeta {
-  page: number;
+export interface PageInfo {
   limit: number;
+  // The 0-based index of the first row in this page - lets a "Showing X-Y of Z" line be
+  // rendered without decoding a cursor.
+  offset: number;
   total: number;
-  totalPages: number;
   hasNextPage: boolean;
-  hasPrevPage: boolean;
+  hasPreviousPage: boolean;
+  nextCursor: string | null;
+  previousCursor: string | null;
   filters: Record<string, unknown>;
 }
 
@@ -32,34 +38,81 @@ export function singleValueError(query: Query, names: string[]): string | null {
   return null;
 }
 
-export type PageResult = { page: number; error?: undefined } | { error: string; page?: undefined };
-
-// -> { page } or { error }. A missing page is page 1.
-export function parsePage(value: unknown): PageResult {
-  if (value === undefined) return { page: 1 };
-  const text = typeof value === 'string' ? value.trim() : '';
-  const page = INTEGER.test(text) ? Number(text) : NaN;
-  if (!Number.isSafeInteger(page) || page < 1) return { error: 'page must be an integer of at least 1' };
-  return { page };
+// An opaque cursor is just the offset it points at, base64url-encoded so it is never read or
+// constructed by hand - { o: <offset> }. Cursors are only ever compared to the filtered,
+// sorted result they were issued for, which the caller always resends alongside them (the
+// frontend keeps its filters when it follows a cursor), so an offset is enough: it never needs
+// to survive a different filter set.
+function encodeCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ o: offset }), 'utf8').toString('base64url');
 }
 
-// A list whose only parameter is ?page= -> { page } or { error }.
-export function parsePageQuery(query: Query, extraNames: string[] = []): PageResult {
-  const repeated = singleValueError(query, ['page', ...extraNames]);
-  return repeated ? { error: repeated } : parsePage(query.page);
+function decodeCursor(cursor: string): number | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { o?: unknown };
+    return typeof parsed.o === 'number' && Number.isInteger(parsed.o) && parsed.o >= 0 ? parsed.o : null;
+  } catch {
+    return null;
+  }
 }
 
-export const offsetOf = (page: number): number => (page - 1) * PAGE_SIZE;
+export type CursorResult = { limit: number; offset: number; error?: undefined } | { error: string; limit?: undefined; offset?: undefined };
 
-export function pageMeta({ page, total, filters = {} }: { page: number; total: number; filters?: Record<string, unknown> }): PageMeta {
-  const totalPages = Math.ceil(total / PAGE_SIZE);
+// -> { limit, offset } or { error }. Missing limit is DEFAULT_LIMIT; missing after/before is
+// offset 0 (the first page).
+export function parseCursor(query: Query = {}): CursorResult {
+  let limit = DEFAULT_LIMIT;
+  if (query.limit !== undefined) {
+    const limitText = typeof query.limit === 'string' ? query.limit.trim() : '';
+    if (!INTEGER.test(limitText) || Number(limitText) < 1) return { error: 'limit must be a positive integer' };
+    limit = Number(limitText);
+    if (limit > MAX_LIMIT) return { error: `limit must be at most ${MAX_LIMIT}` };
+  }
+
+  const afterText = typeof query.after === 'string' ? query.after.trim() : '';
+  const beforeText = typeof query.before === 'string' ? query.before.trim() : '';
+  if (afterText && beforeText) return { error: 'after and before cannot both be given' };
+
+  if (afterText) {
+    const offset = decodeCursor(afterText);
+    if (offset === null) return { error: 'after is not a valid cursor' };
+    return { limit, offset };
+  }
+  if (beforeText) {
+    const offset = decodeCursor(beforeText);
+    if (offset === null) return { error: 'before is not a valid cursor' };
+    return { limit, offset };
+  }
+  return { limit, offset: 0 };
+}
+
+// A list whose only parameters are ?limit=/?after=/?before= -> { limit, offset } or { error }.
+export function parseCursorQuery(query: Query, extraNames: string[] = []): CursorResult {
+  const repeated = singleValueError(query, ['limit', 'after', 'before', ...extraNames]);
+  return repeated ? { error: repeated } : parseCursor(query);
+}
+
+export function pageInfo({
+  limit,
+  offset,
+  total,
+  filters = {},
+}: {
+  limit: number;
+  offset: number;
+  total: number;
+  filters?: Record<string, unknown>;
+}): PageInfo {
+  const hasNextPage = offset + limit < total;
+  const hasPreviousPage = offset > 0;
   return {
-    page,
-    limit: PAGE_SIZE,
+    limit,
+    offset,
     total,
-    totalPages,
-    hasNextPage: page < totalPages,
-    hasPrevPage: page > 1,
+    hasNextPage,
+    hasPreviousPage,
+    nextCursor: hasNextPage ? encodeCursor(offset + limit) : null,
+    previousCursor: hasPreviousPage ? encodeCursor(Math.max(0, offset - limit)) : null,
     filters,
   };
 }

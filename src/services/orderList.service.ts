@@ -2,27 +2,27 @@ import { Op, fn, col, where as sqlWhere, type WhereOptions } from 'sequelize';
 import { Order, OrderLineItem } from '../models';
 import { orderFlags, type OrderFlags } from '../utils/orderStatus';
 import {
-  PAGE_SIZE,
   singleValueError,
-  parsePage,
-  offsetOf,
-  pageMeta,
+  parseCursor,
+  pageInfo,
   parseDateRange,
   likeContains,
-  type PageMeta,
+  type PageInfo,
   type Query,
 } from '../utils/paginate';
+import { pickRenamed, RENAMED_FIELDS } from '../utils/fieldAliases';
 
-// One page of orders, newest first - the list behind GET /api/dashboard/orders (one employee's
-// orders) and GET /api/admin/orders (everyone's). Pagination contract: utils/paginate.ts.
+// One cursor page of orders, newest first - the list behind GET /api/dashboard/orders (one
+// employee's orders) and GET /api/admin/orders (everyone's). Pagination contract: utils/paginate.ts.
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_STATUS_LENGTH = 50;
 const MAX_SEARCH_LENGTH = 100;
 
 export interface OrderListParams {
-  page: number;
-  employeeEmail: string | null;
+  limit: number;
+  offset: number;
+  email: string | null;
   status: string | null;
   fromDate: string | null;
   toDate: string | null;
@@ -34,29 +34,45 @@ export interface OrderListParams {
 export type OrderListQueryResult = { params: OrderListParams; error?: undefined } | { error: string; params?: undefined };
 
 // req.query -> { error } | { params }.
-//   employeeRequired  the list is always for one employee (?employeeEmail=)
+//   employeeRequired  the list is always for one employee (?email=)
+//   allowLegacyEmailAlias  admin-only compatibility for the old ?employeeEmail= spelling
 //   allowSearch       admin only: ?q= matches Shopify order id, employee name or email
 // fromDate / toDate: "YYYY-MM-DD" (a whole UTC day) or an ISO 8601 date-time (that instant), on the
 // order's creation time, both ends inclusive.
 export function parseOrderListQuery(
   query: Query = {},
-  { employeeRequired = false, allowSearch = false }: { employeeRequired?: boolean; allowSearch?: boolean } = {}
+  {
+    employeeRequired = false,
+    allowSearch = false,
+    allowLegacyEmailAlias = false,
+  }: { employeeRequired?: boolean; allowSearch?: boolean; allowLegacyEmailAlias?: boolean } = {}
 ): OrderListQueryResult {
-  const names = ['page', 'employeeEmail', 'status', 'fromDate', 'toDate', ...(allowSearch ? ['q'] : [])];
+  const names = [
+    'limit',
+    'after',
+    'before',
+    'email',
+    ...(allowLegacyEmailAlias ? [RENAMED_FIELDS.email] : []),
+    'status',
+    'fromDate',
+    'toDate',
+    ...(allowSearch ? ['q'] : []),
+  ];
   const repeated = singleValueError(query, names);
   if (repeated) return { error: repeated };
 
-  const parsedPage = parsePage(query.page);
-  if (parsedPage.error !== undefined) return { error: parsedPage.error };
+  const parsedCursor = parseCursor(query);
+  if (parsedCursor.error !== undefined) return { error: parsedCursor.error };
 
   const text = (name: string): string => (typeof query[name] === 'string' ? (query[name] as string).trim() : '');
 
-  const employeeEmail = text('employeeEmail').toLowerCase();
-  if (employeeRequired && (!employeeEmail || employeeEmail.length > 255 || !EMAIL_PATTERN.test(employeeEmail))) {
-    return { error: 'A valid employeeEmail query parameter is required' };
+  const rawEmail = allowLegacyEmailAlias ? pickRenamed(query, 'email') : query.email;
+  const email = (typeof rawEmail === 'string' ? rawEmail.trim() : '').toLowerCase();
+  if (employeeRequired && (!email || email.length > 255 || !EMAIL_PATTERN.test(email))) {
+    return { error: 'A valid email query parameter is required' };
   }
-  if (employeeEmail && (employeeEmail.length > 255 || !EMAIL_PATTERN.test(employeeEmail))) {
-    return { error: 'employeeEmail must be a valid email address' };
+  if (email && (email.length > 255 || !EMAIL_PATTERN.test(email))) {
+    return { error: 'email must be a valid email address' };
   }
 
   const status = text('status').toLowerCase();
@@ -70,8 +86,9 @@ export function parseOrderListQuery(
 
   return {
     params: {
-      page: parsedPage.page,
-      employeeEmail: employeeEmail || null,
+      limit: parsedCursor.limit,
+      offset: parsedCursor.offset,
+      email: email || null,
       status: status || null,
       fromDate: text('fromDate') || null,
       toDate: text('toDate') || null,
@@ -84,13 +101,13 @@ export function parseOrderListQuery(
 
 export interface OrderListPage {
   data: (Record<string, unknown> & OrderFlags)[];
-  meta: PageMeta;
+  pageInfo: PageInfo;
 }
 
-// params from parseOrderListQuery -> { data, meta }.
+// params from parseOrderListQuery -> { data, pageInfo }.
 export async function listOrders(params: OrderListParams): Promise<OrderListPage> {
   const where: Record<string, unknown> = {};
-  if (params.employeeEmail) where.employeeEmail = params.employeeEmail;
+  if (params.email) where.email = params.email;
   if (params.from || params.to) {
     const createdAt: Record<symbol, Date> = {};
     if (params.from) createdAt[Op.gte] = params.from;
@@ -101,7 +118,7 @@ export async function listOrders(params: OrderListParams): Promise<OrderListPage
   if (params.status) conditions.push(sqlWhere(fn('LOWER', col('Order.status')), params.status));
   if (params.q) {
     const like = { [Op.like]: likeContains(params.q) };
-    conditions.push({ [Op.or]: [{ shopifyOrderId: like }, { employeeEmail: like }, { employeeName: like }] });
+    conditions.push({ [Op.or]: [{ shopifyOrderId: like }, { email: like }, { name: like }] });
   }
 
   const { rows, count } = await Order.findAndCountAll({
@@ -111,18 +128,19 @@ export async function listOrders(params: OrderListParams): Promise<OrderListPage
       ['createdAt', 'DESC'],
       ['id', 'DESC'],
     ],
-    limit: PAGE_SIZE,
-    offset: offsetOf(params.page),
+    limit: params.limit,
+    offset: params.offset,
     distinct: true,
   });
 
   return {
     data: rows.map((order) => ({ ...order.toJSON(), ...orderFlags(order) })),
-    meta: pageMeta({
-      page: params.page,
+    pageInfo: pageInfo({
+      limit: params.limit,
+      offset: params.offset,
       total: count,
       filters: {
-        employeeEmail: params.employeeEmail,
+        email: params.email,
         status: params.status,
         fromDate: params.fromDate,
         toDate: params.toDate,

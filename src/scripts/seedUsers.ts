@@ -43,12 +43,25 @@ function deriveNameAndPassword(email: string): { name: string; password: string 
   return { name, password };
 }
 
+const FIRST_EMPLOYEE_ID = 12345;
+
+async function nextFreeEmployeeId(used: Set<string>): Promise<string> {
+  let candidate = FIRST_EMPLOYEE_ID;
+  while (used.has(String(candidate))) candidate += 1;
+  const id = String(candidate);
+  used.add(id);
+  return id;
+}
+
 async function seed(): Promise<void> {
   await connectDB();
   // Creates the users table if it doesn't already exist, without touching other tables.
   await User.sync();
 
   const uniqueEmails = [...new Set(EMPLOYEE_EMAILS.map((e) => e.trim().toLowerCase()))];
+
+  const existingIds = await User.findAll({ attributes: ['employeeId'] });
+  const usedEmployeeIds = new Set(existingIds.map((u) => u.employeeId).filter(Boolean));
 
   let created = 0;
   let skipped = 0;
@@ -67,9 +80,10 @@ async function seed(): Promise<void> {
       throw new Error(`Generated password for ${email} fails policy: ${policyCheck.message}`);
     }
 
+    const employeeId = await nextFreeEmployeeId(usedEmployeeIds);
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    await User.create({ email, name, passwordHash, mustResetPassword: true });
-    passwordLines.push(`${email}\t${password}`);
+    await User.create({ email, employeeId, name, passwordHash, mustResetPassword: true });
+    passwordLines.push(`${email}\t${employeeId}\t${password}`);
     created += 1;
   }
 

@@ -4,7 +4,15 @@ import type { OrderInstance } from '../models/Order';
 import * as shopify from './shopify/client';
 import * as orderActions from './shopify/orderActions';
 import { syncLocalOrderFromShopify } from './orderSync.service';
-import { shopifyOrderStatusLabel, isOrderFulfilled, orderFlags, LOCKED_MESSAGE, type OrderFlags } from '../utils/orderStatus';
+import {
+  shopifyOrderStatusLabel,
+  isOrderFulfilled,
+  isShopifyOrderId,
+  orderFlags,
+  LOCKED_MESSAGE,
+  SHOPIFY_ORDER_ID_MESSAGE,
+  type OrderFlags,
+} from '../utils/orderStatus';
 import { ConfigError, UNAVAILABLE_MESSAGE, httpError, errorMessage, hasStatusCode } from '../utils/errors';
 import { alertServerError } from './alert';
 import type { ShopifyOrder } from '../types/shopify';
@@ -39,7 +47,7 @@ async function viaShopify<T>(fn: () => Promise<T>, scopeHint: string): Promise<T
 }
 
 async function loadByShopifyId(shopifyOrderId: unknown): Promise<OrderInstance> {
-  if (!/^\d+$/.test(String(shopifyOrderId))) throw httpError(400, 'Shopify order id must be numeric');
+  if (!isShopifyOrderId(shopifyOrderId)) throw httpError(400, SHOPIFY_ORDER_ID_MESSAGE);
   const order = await Order.findOne({ where: { shopifyOrderId: String(shopifyOrderId) } });
   if (!order) throw httpError(404, 'Order not found');
   if (!order.shopifyOrderId) throw httpError(409, 'Order has no Shopify order');

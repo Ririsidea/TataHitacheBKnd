@@ -68,6 +68,11 @@ export function orderFlags(order: OrderLike): OrderFlags {
   };
 }
 
+// Every route that takes an order id takes the SHOPIFY order id (orders.shopify_order_id, unique),
+// never the internal orders.id - order status, cancel and the admin status actions.
+export const isShopifyOrderId = (value: unknown): value is string => /^\d+$/.test(String(value));
+export const SHOPIFY_ORDER_ID_MESSAGE = 'Shopify order id must be numeric';
+
 export const LOCKED_MESSAGE =
   'Order is fulfilled and locked - it can no longer be cancelled, edited or have its status changed';
 

@@ -2,7 +2,6 @@ import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import { sap } from './config/env';
-import healthRoutes from './routes/health.routes';
 import webhookRoutes from './routes/webhook.routes';
 import authRoutes from './routes/auth.routes';
 import mapRoutes from './routes/map.routes';
@@ -40,7 +39,9 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use('/exports', express.static(path.resolve(sap.localDir)));
 
-app.use('/api', healthRoutes);
+app.get('/api/health', (_req, res) => {
+  res.json({ success: true, message: 'Server is healthy', timestamp: new Date().toISOString() });
+});
 app.use('/api/auth', authRoutes);
 // Shopify-related routes authenticate per route with the MAP API key (x-api-key);
 // see map.routes.ts / dashboard.routes.ts. JWT stays on auth/sap/admin

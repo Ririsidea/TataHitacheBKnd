@@ -10,8 +10,11 @@ const router = express.Router();
 // holder is trusted for everything else.
 router.get('/stock', requireApiKey, controller.getStock);
 router.get('/product/:key', requireApiKey, controller.getProductDetail);
+router.get('/pincode/:pin', requireApiKey, controller.getPincode);
+router.post('/validate-address', requireApiKey, controller.validateAddress);
 router.post('/create-order', requireApiKey, controller.createOrder);
-router.get('/order-status/:id', requireApiKey, controller.getOrderStatus);
-router.post('/orders/:id/cancel', requireApiKey, controller.cancelOrder);
+// Both take the Shopify order id (data.shopifyOrderId), never the internal orders.id.
+router.get('/order-status/:shopifyOrderId', requireApiKey, controller.getOrderStatus);
+router.post('/orders/:shopifyOrderId/cancel', requireApiKey, controller.cancelOrder);
 
 export default router;

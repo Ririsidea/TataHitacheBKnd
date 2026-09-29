@@ -2,13 +2,13 @@ import cron from 'node-cron';
 import { runDailyEmployeeExports } from '../services/orderExport.service';
 import { errorMessage } from '../utils/errors';
 
-// Separate from - and does not touch - the existing 8 PM all-employees SAP
-// hand-off cron (sapExportCron.ts). Runs once daily at 00:05 server time and
-// exports the PREVIOUS full calendar day (00:00-23:59), which is guaranteed to
+// Runs once daily at 00:05 server time and exports the PREVIOUS full calendar day
+// (00:00-23:59, in the server process's local timezone - not hardcoded to IST; see the
+// TZ note in orderExport.service.ts's dayBounds/toDateOnly), which is guaranteed to
 // be complete by the time this runs. A day with zero orders still gets a
 // recorded (0-order) export for every employee - that is expected, not an error.
 export default function scheduleEmployeeDailyExport(): void {
-  cron.schedule('0 * * * *', async () => {
+  cron.schedule('5 0 * * *', async () => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     try {

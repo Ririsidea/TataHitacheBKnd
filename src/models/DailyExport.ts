@@ -3,7 +3,8 @@ import { sequelize } from '../config/db';
 
 export interface DailyExportAttributes {
   id: number;
-  employeeEmail: string;
+  // The employee the export belongs to (column employee_email).
+  email: string;
   // A DATEONLY column: "YYYY-MM-DD".
   exportDate: string;
   orderCount: number;
@@ -13,7 +14,7 @@ export interface DailyExportAttributes {
 }
 
 export type DailyExportCreationAttributes = Partial<DailyExportAttributes> & {
-  employeeEmail: string;
+  email: string;
   exportDate: string;
   fileName: string;
 };
@@ -30,12 +31,12 @@ const DailyExport = sequelize.define<DailyExportInstance>(
   'DailyExport',
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-    employeeEmail: {
+    email: {
       type: DataTypes.STRING(255),
       allowNull: false,
       field: 'employee_email',
       set(this: DailyExportInstance, value: unknown) {
-        this.setDataValue('employeeEmail', String(value).trim().toLowerCase());
+        this.setDataValue('email', String(value).trim().toLowerCase());
       },
     },
     exportDate: { type: DataTypes.DATEONLY, allowNull: false, field: 'export_date' },

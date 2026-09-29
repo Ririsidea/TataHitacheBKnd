@@ -3,13 +3,22 @@ import { Order, OrderLineItem, User } from '../models';
 import * as shopify from '../services/shopify/client';
 import { parseCatalogQuery, searchCatalog } from '../services/catalogSearch';
 import { getCatalogIndex, lookupProduct } from '../services/catalog.service';
-import { shopifyOrderStatusLabel, isOrderFulfilled, LOCKED_MESSAGE } from '../utils/orderStatus';
+import {
+  shopifyOrderStatusLabel,
+  isOrderFulfilled,
+  isShopifyOrderId,
+  LOCKED_MESSAGE,
+  SHOPIFY_ORDER_ID_MESSAGE,
+} from '../utils/orderStatus';
 import { httpError, errorMessage } from '../utils/errors';
+import { validateIndianAddress, lookupPincode } from '../services/pincode.service';
+import { readRenamed } from '../utils/fieldAliases';
 import type { SkuVariantNode } from '../types/shopify';
 
 const MAX_KEY_LENGTH = 100;
 
-// Product list + search: always one page of PAGE_SIZE variant rows (see services/catalogSearch.ts).
+// Product list + search: one cursor page of variant rows, ?limit= (default 50) at a time
+// (see services/catalogSearch.ts).
 export async function getStock(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = parseCatalogQuery(req.query);
@@ -18,8 +27,8 @@ export async function getStock(req: Request, res: Response, next: NextFunction):
       return;
     }
     const index = await getCatalogIndex({ fresh: parsed.params.fresh });
-    const { data, meta } = searchCatalog(index, parsed.params);
-    res.json({ success: true, data, meta });
+    const { data, pageInfo } = searchCatalog(index, parsed.params);
+    res.json({ success: true, data, pageInfo });
   } catch (err) {
     next(err);
   }
@@ -43,6 +52,26 @@ export async function getProductDetail(req: Request, res: Response, next: NextFu
       return;
     }
     res.json({ success: true, data: product });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// A PIN's state, district and the exact list of city names validate-address / create-order
+// accept for it (see services/pincode.service.ts - the same list both places use).
+export async function getPincode(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const pin = String(req.params.pin ?? '').trim();
+    const result = lookupPincode(pin);
+    if (result.error === 'INVALID_FORMAT') {
+      res.status(400).json({ success: false, message: 'pin must be a 6-digit Indian PIN code' });
+      return;
+    }
+    if (result.error === 'NOT_FOUND') {
+      res.status(404).json({ success: false, message: `No PIN code found for '${pin}'` });
+      return;
+    }
+    res.json({ success: true, data: result.info });
   } catch (err) {
     next(err);
   }
@@ -94,19 +123,58 @@ async function verifyNoNegativeStock(items: OrderItem[]): Promise<{ negative: Sk
   return { negative, variants };
 }
 
+type ShippingAddressCheck = { error?: undefined } | { error: string; code: string };
+
+// Validates the shipping address synchronously against the bundled Indian PIN dataset
+// before stock is touched or anything is sent to Shopify.
+function validateShippingAddress(shippingAddress: Record<string, unknown> | undefined): ShippingAddressCheck {
+  const result = validateIndianAddress({
+    country: shippingAddress?.country,
+    state: shippingAddress?.province,
+    city: shippingAddress?.city,
+    pincode: shippingAddress?.zip,
+  });
+  return result.valid ? {} : { error: result.message, code: result.code };
+}
+
+export function validateAddress(req: Request, res: Response, next: NextFunction): void {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = validateIndianAddress({
+      country: body.country,
+      state: body.state,
+      city: body.city,
+      pincode: body.pincode,
+    });
+    if (!result.valid) {
+      res.status(400).json({ success: false, code: result.code, message: result.message });
+      return;
+    }
+    res.json({
+      success: true,
+      data: { valid: true, pincode: result.pincode, state: result.state, city: result.city },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type OrderIdentity = { name: string; email: string; channel: string; error?: undefined } | { error: string };
 
 // There is no logged-in user on this key-authenticated route, so the employee the order
-// is placed for comes from the request body. Returns { error } or the cleaned identity.
-function parseOrderIdentity(body: Record<string, unknown>): OrderIdentity {
-  const name = typeof body.employeeName === 'string' ? body.employeeName.trim() : '';
-  if (!name || name.length > 255) return { error: 'employeeName is required (max 255 characters)' };
+// is placed for comes from the request body (name / email; the old employeeName /
+// employeeEmail are still accepted as aliases). Returns { error } or the cleaned identity.
+function parseOrderIdentity(req: Request, body: Record<string, unknown>): OrderIdentity {
+  const rawName = readRenamed(req, body, 'name', 'body field');
+  const name = typeof rawName === 'string' ? rawName.trim() : '';
+  if (!name || name.length > 255) return { error: 'name is required (max 255 characters)' };
 
-  const email = typeof body.employeeEmail === 'string' ? body.employeeEmail.trim().toLowerCase() : '';
+  const rawEmail = readRenamed(req, body, 'email', 'body field');
+  const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
   if (!email || email.length > 255 || !EMAIL_PATTERN.test(email)) {
-    return { error: 'employeeEmail is required and must be a valid email address' };
+    return { error: 'email is required and must be a valid email address' };
   }
 
   let channel = 'MAP';
@@ -134,10 +202,16 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    // The order is placed for the employee named in the request (employeeName /
-    // employeeEmail, plus optional channel) - this route is authenticated by
-    // the MAP API key, so there is no logged-in user to read them from.
-    const identity = parseOrderIdentity(body);
+    const addressCheck = validateShippingAddress(shippingAddress);
+    if (addressCheck.error !== undefined) {
+      res.status(400).json({ success: false, code: addressCheck.code, message: addressCheck.error });
+      return;
+    }
+
+    // The order is placed for the employee named in the request (name / email, plus
+    // optional phone and channel) - this route is authenticated by the MAP API key, so
+    // there is no logged-in user to read them from.
+    const identity = parseOrderIdentity(req, body);
     if (identity.error !== undefined) {
       res.status(400).json({ success: false, message: identity.error });
       return;
@@ -253,9 +327,9 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
 
     const order = await Order.create({
       shopifyOrderId: String(shopifyOrder.id),
-      employeeName: employee.name,
-      employeeEmail: employee.email,
-      employeePhone: employee.phone,
+      name: employee.name,
+      email: employee.email,
+      phone: employee.phone,
       status: 'open',
       financialStatus: shopifyOrder.financial_status,
       fulfillmentStatus: shopifyOrder.fulfillment_status,
@@ -282,9 +356,16 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
   }
 }
 
+// :shopifyOrderId is the Shopify order id (data.shopifyOrderId of Create Order). The order is
+// looked up by shopify_order_id only - the internal orders.id is never accepted here.
 export async function getOrderStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const order = await Order.findByPk(String(req.params.id));
+    const shopifyOrderId = String(req.params.shopifyOrderId);
+    if (!isShopifyOrderId(shopifyOrderId)) {
+      res.status(400).json({ success: false, message: SHOPIFY_ORDER_ID_MESSAGE });
+      return;
+    }
+    const order = await Order.findOne({ where: { shopifyOrderId } });
     if (!order) {
       res.status(404).json({ success: false, message: 'Order not found' });
       return;
@@ -312,13 +393,13 @@ export async function getOrderStatus(req: Request, res: Response, next: NextFunc
 // or closed). Status is re-verified here against live data - the frontend hiding the
 // button is a convenience, not the guard. (Authenticated by the MAP API key; the key
 // holder is trusted, so there is no per-employee ownership check.)
-// :id is the SHOPIFY order id (the id visible in Shopify Admin / the order's
+// :shopifyOrderId is the SHOPIFY order id (the id visible in Shopify Admin / the order's
 // shopifyOrderId field), not the internal orders.id.
 export async function cancelOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const shopifyOrderId = String(req.params.id);
-    if (!/^\d+$/.test(shopifyOrderId)) {
-      res.status(400).json({ success: false, message: 'Shopify order id must be numeric' });
+    const shopifyOrderId = String(req.params.shopifyOrderId);
+    if (!isShopifyOrderId(shopifyOrderId)) {
+      res.status(400).json({ success: false, message: SHOPIFY_ORDER_ID_MESSAGE });
       return;
     }
     const order = await Order.findOne({

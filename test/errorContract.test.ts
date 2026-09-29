@@ -61,7 +61,7 @@ test('every error carries a requestId (body + header): 404 route, 401 key, 400 i
   assertError(await call('/api/no-such-route'), 404);
   assertError(await call('/api/map/stock'), 401, 'API key required');
   assertError(await call('/api/map/stock', { headers: { 'x-api-key': 'wrong' } }), 401, 'Invalid API key');
-  assertError(await call('/api/map/stock?page=0', { headers: KEY }), 400);
+  assertError(await call('/api/map/stock?limit=0', { headers: KEY }), 400);
   assertError(await call('/api/auth/me'), 401);
 });
 
@@ -132,7 +132,7 @@ test('an unexpected failure is a generic 500 with a requestId, logged and alerte
   t.mock.method(Order, 'findAndCountAll', async () => {
     throw new Error("SQL: SELECT secret FROM orders (password='hunter2')");
   });
-  const res = await call('/api/dashboard/orders?employeeEmail=a@b.co', { headers: KEY });
+  const res = await call('/api/dashboard/orders?email=a@b.co', { headers: KEY });
   assertError(res, 500, GENERIC);
   assert.ok(!JSON.stringify(res.body).includes('hunter2'));
   assert.equal(alerted.mock.callCount(), 1);
@@ -176,7 +176,7 @@ test('a signed-in non-admin calling an admin route gets 404, not 403', async (t)
 
 test("someone else's export answers 404, and a missing export file 404 (not 403 / 410)", async (t) => {
   quiet(t);
-  t.mock.method(DailyExport, 'findByPk', async () => ({ id: 1, employeeEmail: 'owner@test.co', fileName: 'nope-does-not-exist.csv' }));
+  t.mock.method(DailyExport, 'findByPk', async () => ({ id: 1, email: 'owner@test.co', fileName: 'nope-does-not-exist.csv' }));
   const other = { authorization: `Bearer ${token('intruder@test.co')}` };
   assertError(await call('/api/sap/daily-exports/1/view', { headers: other }), 404, 'Export not found');
   assertError(await call('/api/sap/daily-exports/1/download', { headers: other }), 404, 'Export not found');

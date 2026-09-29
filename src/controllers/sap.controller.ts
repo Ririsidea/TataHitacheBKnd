@@ -6,12 +6,17 @@ import type { NextFunction, Request, Response } from 'express';
 import { DailyExport } from '../models';
 import type { DailyExportInstance } from '../models/DailyExport';
 import { dailyExportDir, generateDailyExport } from '../services/orderExport.service';
-import { PAGE_SIZE, parsePageQuery, parseDayRange, offsetOf, pageMeta } from '../utils/paginate';
+import { parseCursorQuery, parseDayRange, pageInfo } from '../utils/paginate';
 import { httpError, errorMessage } from '../utils/errors';
 
 export async function exportDailyOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { fileName, count } = await generateDailyExport(req.user?.email);
+    const email = req.user?.email;
+    if (!email) {
+      res.status(401).json({ success: false, message: 'Authentication required' });
+      return;
+    }
+    const { fileName, count } = await generateDailyExport(email);
     res.json({
       success: true,
       message: `Exported ${count} order(s) for your account`,
@@ -30,26 +35,27 @@ async function findOwnedDailyExport(req: Request): Promise<DailyExportInstance> 
   // order ownership checks in map.controller.ts.
   // Someone else's export is answered exactly like a missing one (no 403 in the client contract, and
   // it does not reveal that the id exists).
-  if (record.employeeEmail !== req.user?.email) throw httpError(404, 'Export not found');
+  if (record.email !== req.user?.email) throw httpError(404, 'Export not found');
   return record;
 }
 
-// The signed-in employee's daily exports, newest first, one page at a time.
-// Optional: from / to (YYYY-MM-DD, inclusive, on the export date), page.
+// The signed-in employee's daily exports, newest first, one cursor page at a time.
+// Optional: from / to (YYYY-MM-DD, inclusive, on the export date), limit, after, before.
 export async function listDailyExports(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const parsed = parsePageQuery(req.query, ['from', 'to']);
+    const parsed = parseCursorQuery(req.query, ['from', 'to']);
     if (parsed.error !== undefined) {
       res.status(400).json({ success: false, message: parsed.error });
       return;
     }
+    const { limit, offset } = parsed;
     const range = parseDayRange(req.query, 'from', 'to');
     if (range.error !== undefined) {
       res.status(400).json({ success: false, message: range.error });
       return;
     }
 
-    const where: Record<string, unknown> = { employeeEmail: req.user?.email };
+    const where: Record<string, unknown> = { email: req.user?.email };
     if (range.from || range.to) {
       const exportDate: Record<symbol, string> = {};
       if (range.from) exportDate[Op.gte] = range.from;
@@ -63,14 +69,14 @@ export async function listDailyExports(req: Request, res: Response, next: NextFu
         ['exportDate', 'DESC'],
         ['id', 'DESC'],
       ],
-      limit: PAGE_SIZE,
-      offset: offsetOf(parsed.page),
+      limit,
+      offset,
     });
 
     res.json({
       success: true,
       data: rows,
-      meta: pageMeta({ page: parsed.page, total: count, filters: { from: range.from, to: range.to } }),
+      pageInfo: pageInfo({ limit, offset, total: count, filters: { from: range.from, to: range.to } }),
     });
   } catch (err) {
     next(err);

@@ -2,8 +2,7 @@ import app from './app';
 import { port, nodeEnv, map, shopify, jwtSecret, admin } from './config/env';
 import { alertServerError } from './services/alert';
 import connectDB from './config/db';
-import { ensureOrderColumns } from './config/ensureSchema';
-// import scheduleSapExport from './jobs/sapExportCron';
+import { ensureOrderColumns, ensureUserColumns } from './config/ensureSchema';
 import scheduleEmployeeDailyExport from './jobs/employeeDailyExportCron';
 import scheduleOrderReconcile from './jobs/orderReconcileCron';
 import * as shopifyClient from './services/shopify/client';
@@ -40,6 +39,7 @@ async function start(): Promise<void> {
   checkCredentialConfig();
   await connectDB();
   await ensureOrderColumns();
+  await ensureUserColumns();
   scheduleEmployeeDailyExport();
   scheduleOrderReconcile();
 

@@ -1,21 +1,21 @@
 import path from 'path';
 import fs from 'fs';
-import { Op, type WhereOptions } from 'sequelize';
+import { Op } from 'sequelize';
 import ExcelJS from 'exceljs';
 import { Order, OrderLineItem, User, DailyExport } from '../models';
-import type { OrderInstance, OrderAttributes } from '../models/Order';
+import type { OrderInstance } from '../models/Order';
 import { sap } from '../config/env';
 import { errorMessage } from '../utils/errors';
 
-// Export generation shared by the two export cron jobs (src/jobs) and the HTTP handlers
+// Export generation shared by the employeeDailyExportCron job (src/jobs) and the HTTP handlers
 // in controllers/sap.controller.ts: builds the order worksheets, writes the CSV files and
 // records the per-employee daily exports. No req/res handling lives here.
 
-// Per-employee daily export history (Section: Employee Orders page) lives in its
-// own subfolder, separate from the legacy ad hoc / nightly-SAP files below - this
-// keeps the two features' filenames from ever colliding, and keeps these files off
-// the public, unauthenticated `/exports` static mount (see app.ts). They are only
-// ever served through the authenticated endpoints in controllers/sap.controller.ts.
+// Per-employee daily export history (Section: Employee Orders page) lives in its own
+// subfolder, separate from the on-demand "Export My Orders" files below - this keeps the
+// two features' filenames from ever colliding, and keeps these files off the public,
+// unauthenticated `/exports` static mount (see app.ts). They are only ever served through
+// the authenticated endpoints in controllers/sap.controller.ts.
 const DAILY_EXPORT_SUBDIR = 'daily';
 
 export function dailyExportDir(): string {
@@ -23,7 +23,7 @@ export function dailyExportDir(): string {
 }
 
 // Shared by every export path below so a column can never drift between the
-// legacy nightly/on-demand export and the new per-employee daily export.
+// on-demand export and the per-employee daily export.
 function buildOrdersWorksheet(workbook: ExcelJS.Workbook, orders: OrderInstance[]): ExcelJS.Worksheet {
   const worksheet = workbook.addWorksheet('Orders');
   worksheet.columns = [
@@ -61,25 +61,11 @@ export interface ExportFile {
   count: number;
 }
 
-// With no employeeEmail, this is the full nightly SAP hand-off (all
-// employees, today's orders only) - used by the 8 PM cron job. With an
-// employeeEmail, it's an on-demand export for that one employee, scoped to
-// their own orders only, across all dates (not just today's).
-// Unchanged behaviour - only the worksheet-building step was factored out above.
-export async function generateDailyExport(employeeEmail?: string): Promise<ExportFile> {
-  const where: WhereOptions<OrderAttributes> = {};
-  if (employeeEmail) {
-    (where as Record<string, unknown>).employeeEmail = employeeEmail;
-  } else {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-    (where as Record<string, unknown>).createdAt = { [Op.gte]: startOfDay, [Op.lte]: endOfDay };
-  }
-
+// On-demand export for the signed-in employee ("Export My Orders" button, POST
+// /api/sap/export-daily): all of their own orders, across every date (not just today's).
+export async function generateDailyExport(email: string): Promise<ExportFile> {
   const orders = await Order.findAll({
-    where,
+    where: { email },
     include: [{ model: OrderLineItem, as: 'lineItems' }],
     order: [['createdAt', 'DESC']],
     raw: false,
@@ -91,16 +77,11 @@ export async function generateDailyExport(employeeEmail?: string): Promise<Expor
   const dir = path.resolve(sap.localDir);
   fs.mkdirSync(dir, { recursive: true });
   const datePart = new Date().toISOString().slice(0, 10);
-  // Per-employee exports get their own file name (slug of their email) so they
-  // never collide with each other or overwrite the cron job's full daily file.
-  const employeeSlug = employeeEmail ? `-${employeeEmail.replace(/[^a-z0-9]+/gi, '-')}` : '';
-  const fileName = `sap-orders${employeeSlug}-${datePart}.csv`;
+  // Slug of the employee's email, so two employees exporting on the same day never collide.
+  const employeeSlug = email.replace(/[^a-z0-9]+/gi, '-');
+  const fileName = `sap-orders-${employeeSlug}-${datePart}.csv`;
   const filePath = path.join(dir, fileName);
 
-  // Demo mode writes the CSV to a local folder. In production, swap this
-  // for an SFTP/S3 upload based on SAP_EXPORT_MODE, e.g.:
-  //   if (sap.exportMode === 'sftp') await sftpClient.put(filePath, remotePath);
-  //   if (sap.exportMode === 's3') await s3.putObject({ Bucket, Key, Body: fs.createReadStream(filePath) }).promise();
   await workbook.csv.writeFile(filePath);
 
   return { filePath, fileName, count: orders.length };
@@ -110,6 +91,11 @@ export async function generateDailyExport(employeeEmail?: string): Promise<Expor
 // Employee Orders page: one export per employee per calendar day
 // ---------------------------------------------------------------------------
 
+// Uses the server process's local timezone (Date.setHours etc, not UTC) throughout this
+// file - there is no explicit TZ=Asia/Kolkata anywhere in the project, so "the previous
+// calendar day" is only IST if the process the server actually runs on happens to be set to
+// IST (true on this dev machine; not guaranteed on a deployment target such as a UTC-default
+// container). Set TZ=Asia/Kolkata in the server's environment if IST must be guaranteed.
 function dayBounds(dateInput: string | Date | number): { start: Date; end: Date } {
   const start = typeof dateInput === 'string' ? new Date(`${dateInput}T00:00:00`) : new Date(dateInput);
   start.setHours(0, 0, 0, 0);
@@ -133,16 +119,15 @@ export interface EmployeeExportFile extends ExportFile {
   exportDate: string;
 }
 
-// Same shape as generateDailyExport, but scoped to one employee AND one explicit
-// calendar day (rather than "today" or "all time") - this is what the midnight
-// per-employee cron uses, and it reuses buildOrdersWorksheet so the columns are
-// always identical to the existing exports.
-export async function generateEmployeeDailyExport(employeeEmail: string, dateInput: string | Date | number): Promise<EmployeeExportFile> {
+// Same shape as generateDailyExport, but scoped to one explicit calendar day (rather than
+// "all time") - this is what the midnight per-employee cron uses, and it reuses
+// buildOrdersWorksheet so the columns are always identical to the on-demand export.
+export async function generateEmployeeDailyExport(email: string, dateInput: string | Date | number): Promise<EmployeeExportFile> {
   const { start, end } = dayBounds(dateInput);
   const exportDate = toDateOnly(start);
 
   const orders = await Order.findAll({
-    where: { employeeEmail, createdAt: { [Op.gte]: start, [Op.lte]: end } },
+    where: { email, createdAt: { [Op.gte]: start, [Op.lte]: end } },
     include: [{ model: OrderLineItem, as: 'lineItems' }],
     order: [['createdAt', 'DESC']],
   });
@@ -152,7 +137,7 @@ export async function generateEmployeeDailyExport(employeeEmail: string, dateInp
 
   const dir = dailyExportDir();
   fs.mkdirSync(dir, { recursive: true });
-  const employeeSlug = String(employeeEmail).replace(/[^a-z0-9]+/gi, '-');
+  const employeeSlug = String(email).replace(/[^a-z0-9]+/gi, '-');
   const fileName = `daily-orders-${employeeSlug}-${exportDate}.csv`;
   const filePath = path.join(dir, fileName);
   await workbook.csv.writeFile(filePath);
@@ -168,12 +153,11 @@ export interface DailyRunResult {
   failed: number;
 }
 
-// Runs once daily (see src/jobs/employeeDailyExportCron.ts), separately from the
-// existing 8 PM all-employees SAP hand-off cron, which is untouched. Loops every
-// employee and, for each, generates one file for the given day - even if that
-// employee had zero orders that day, so history stays complete. Skips (does not
-// regenerate/overwrite) any (employee, day) pair that already has a record, so a
-// re-run or a delayed restart can never duplicate or clobber a previous day's file.
+// Runs once daily (see src/jobs/employeeDailyExportCron.ts). Loops every employee and,
+// for each, generates one file for the given day - even if that employee had zero orders
+// that day, so history stays complete. Skips (does not regenerate/overwrite) any
+// (employee, day) pair that already has a record, so a re-run or a delayed restart can
+// never duplicate or clobber a previous day's file.
 export async function runDailyEmployeeExports(dateInput: string | Date | number): Promise<DailyRunResult> {
   const { start } = dayBounds(dateInput);
   const exportDate = toDateOnly(start);
@@ -185,13 +169,13 @@ export async function runDailyEmployeeExports(dateInput: string | Date | number)
 
   for (const { email } of employees) {
     try {
-      const existing = await DailyExport.findOne({ where: { employeeEmail: email, exportDate } });
+      const existing = await DailyExport.findOne({ where: { email, exportDate } });
       if (existing) {
         skipped += 1;
         continue;
       }
       const { fileName, count } = await generateEmployeeDailyExport(email, dateInput);
-      await DailyExport.create({ employeeEmail: email, exportDate, orderCount: count, fileName });
+      await DailyExport.create({ email, exportDate, orderCount: count, fileName });
       created += 1;
     } catch (err) {
       failed += 1;

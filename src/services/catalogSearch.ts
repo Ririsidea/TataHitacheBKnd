@@ -2,9 +2,9 @@
 // Pure functions - no Shopify, no Express - so the rules are unit-tested in test/catalogSearch.test.ts.
 //   parseCatalogQuery(req.query)  -> { error } | { params }
 //   buildIndex(rows)              -> the searchable catalog (built once per catalog copy)
-//   searchCatalog(index, params)  -> { data, meta }   (always one page of PAGE_SIZE rows)
+//   searchCatalog(index, params)  -> { data, pageInfo }   (one cursor page, limit rows by default 50)
 
-import { PAGE_SIZE, singleValueError, parsePage, offsetOf, pageMeta, type PageMeta, type Query } from '../utils/paginate';
+import { singleValueError, parseCursor, pageInfo, type PageInfo, type Query } from '../utils/paginate';
 import type { CatalogRow } from './shopify/productMapper';
 
 const MAX_QUERY_LENGTH = 100;
@@ -16,12 +16,13 @@ export type Order = (typeof ORDERS)[number];
 // Direction used when ?order= is not given. "relevance" is best-first.
 const DEFAULT_ORDER: Record<Sort, Order> = { relevance: 'desc', title: 'asc', price: 'asc', stock: 'desc', newest: 'desc' };
 
-const PARAMS = ['page', 'q', 'sku', 'category', 'vendor', 'tag', 'color', 'size', 'minPrice', 'maxPrice', 'inStock', 'sort', 'order', 'fresh'];
+const PARAMS = ['limit', 'after', 'before', 'q', 'sku', 'category', 'vendor', 'tag', 'color', 'size', 'minPrice', 'maxPrice', 'inStock', 'sort', 'order', 'fresh'];
 const NUMBER_PATTERN = /^-?\d+(\.\d+)?$/;
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 
 export interface CatalogParams {
-  page: number;
+  limit: number;
+  offset: number;
   q: string;
   tokens: string[];
   skus: string[] | null;
@@ -45,13 +46,12 @@ export function parseCatalogQuery(query: Query = {}): CatalogQueryResult {
   const fail = (message: string): { error: string } => ({ error: message });
   const isSet = (name: string): boolean => query[name] !== undefined;
   const read = (name: string): string => (typeof query[name] === 'string' ? (query[name] as string).trim() : '');
-  // Parameters this endpoint does not know are ignored (page size is fixed, there is no limit).
+  // Parameters this endpoint does not know are ignored.
   const repeated = singleValueError(query, PARAMS);
   if (repeated) return fail(repeated);
 
-  const parsedPage = parsePage(query.page);
-  if (parsedPage.error !== undefined) return fail(parsedPage.error);
-  const page = parsedPage.page;
+  const parsedCursor = parseCursor(query);
+  if (parsedCursor.error !== undefined) return fail(parsedCursor.error);
 
   const q = read('q');
   if (q.length > MAX_QUERY_LENGTH) return fail(`q must be at most ${MAX_QUERY_LENGTH} characters`);
@@ -87,7 +87,8 @@ export function parseCatalogQuery(query: Query = {}): CatalogQueryResult {
 
   return {
     params: {
-      page,
+      limit: parsedCursor.limit,
+      offset: parsedCursor.offset,
       q,
       tokens: q.toLowerCase().split(/\s+/).filter(Boolean),
       skus: skus.length ? skus : null,
@@ -109,33 +110,6 @@ export function parseCatalogQuery(query: Query = {}): CatalogQueryResult {
 // ---- searchable catalog ------------------------------------------------------------------
 const lower = (value: unknown): string | null => (value === null || value === undefined ? null : String(value).toLowerCase());
 
-function uniqueSorted(values: (string | null | undefined)[]): string[] {
-  const seen = new Map<string, string>();
-  for (const value of values) {
-    if (value && !seen.has(String(lower(value)))) seen.set(String(lower(value)), value);
-  }
-  return [...seen.values()].sort(collator.compare);
-}
-
-export interface Facets {
-  categories: string[];
-  colors: string[];
-  sizes: string[];
-  priceRange: { min: number; max: number } | null;
-}
-
-// The values the filter dropdowns offer. Taken from the whole catalog (not the current
-// result) so the lists stay put while the user narrows the search.
-function collectFacets(rows: CatalogRow[]): Facets {
-  const prices = rows.map((row) => Number(row.price)).filter(Number.isFinite);
-  return {
-    categories: uniqueSorted(rows.map((row) => row.category)),
-    colors: uniqueSorted(rows.map((row) => row.options.color)),
-    sizes: uniqueSorted(rows.map((row) => row.options.size)),
-    priceRange: prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
-  };
-}
-
 interface IndexEntry {
   row: CatalogRow;
   text: string;
@@ -152,7 +126,6 @@ interface IndexEntry {
 
 export interface CatalogIndex {
   entries: IndexEntry[];
-  facets: Facets;
 }
 
 export function buildIndex(rows: CatalogRow[]): CatalogIndex {
@@ -174,7 +147,7 @@ export function buildIndex(rows: CatalogRow[]): CatalogIndex {
     price: Number(row.price),
     created: Date.parse(row.createdAt as string) || 0,
   }));
-  return { entries, facets: collectFacets(rows) };
+  return { entries };
 }
 
 // ---- search ------------------------------------------------------------------------------
@@ -225,39 +198,36 @@ function compareEntries(a: IndexEntry, b: IndexEntry, params: CatalogParams, phr
 
 export interface CatalogPage {
   data: CatalogRow[];
-  meta: PageMeta & { facets: Facets };
+  pageInfo: PageInfo;
 }
 
 export function searchCatalog(index: CatalogIndex, params: CatalogParams): CatalogPage {
   const phrase = params.tokens.join(' ');
   const found = index.entries.filter((entry) => matches(entry, params));
   found.sort((a, b) => compareEntries(a, b, params, phrase));
-  const start = offsetOf(params.page);
 
   return {
-    data: found.slice(start, start + PAGE_SIZE).map((entry) => entry.row),
-    meta: {
-      ...pageMeta({
-        page: params.page,
-        total: found.length,
-        filters: {
-          q: params.q || null,
-          sku: params.skus,
-          category: params.category,
-          vendor: params.vendor,
-          tag: params.tag,
-          color: params.color,
-          size: params.size,
-          minPrice: params.minPrice,
-          maxPrice: params.maxPrice,
-          inStock: params.inStock,
-          sort: params.sort,
-          order: params.order,
-        },
-      }),
-      facets: index.facets,
-    },
+    data: found.slice(params.offset, params.offset + params.limit).map((entry) => entry.row),
+    pageInfo: pageInfo({
+      limit: params.limit,
+      offset: params.offset,
+      total: found.length,
+      filters: {
+        q: params.q || null,
+        sku: params.skus,
+        category: params.category,
+        vendor: params.vendor,
+        tag: params.tag,
+        color: params.color,
+        size: params.size,
+        minPrice: params.minPrice,
+        maxPrice: params.maxPrice,
+        inStock: params.inStock,
+        sort: params.sort,
+        order: params.order,
+      },
+    }),
   };
 }
 
-export { PAGE_SIZE, MAX_QUERY_LENGTH, SORTS, ORDERS };
+export { MAX_QUERY_LENGTH, SORTS, ORDERS };

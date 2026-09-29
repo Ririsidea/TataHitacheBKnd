@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
     "seed": "tsx src/scripts/seedUsers.ts",
+    "seed:dummy": "tsx scripts/seedDummyEmployees.ts",
+    "seed:dummy:remove": "tsx scripts/seedDummyEmployees.ts --remove",
     "test": "tsx --test \"test/**/*.test.ts\""
   },
   "keywords": [],
@@ -16,15 +18,19 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@devzoy/indian-pincode": "^2.1.0",
+    "@devzoy/indian-pincode-geo": "^2.1.0",
     "axios": "^1.20.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.11.5",
     "node-cron": "^4.6.0",
+    "postcode-validator": "^3.10.22",
     "sequelize": "^6.37.5"
   },
   "devDependencies": {

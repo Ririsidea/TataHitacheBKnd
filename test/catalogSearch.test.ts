@@ -3,7 +3,8 @@ process.env.SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || 'test.mys
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCatalogQuery, buildIndex, searchCatalog, PAGE_SIZE } = require('../src/services/catalogSearch');
+const { parseCatalogQuery, buildIndex, searchCatalog } = require('../src/services/catalogSearch');
+const { DEFAULT_LIMIT, pageInfo } = require('../src/utils/paginate');
 const { mapCatalogVariant } = require('../src/services/shopify/productMapper');
 const { variantNode, sampleCatalog } = require('./support/fixtures');
 
@@ -52,39 +53,39 @@ test('a single default variant has no variantTitle and no options', () => {
 test('"Colour" option names are exposed as color', () => {
   const index = indexOf([variantNode({ productId: 1, variantId: 2, sku: 'X', options: [{ name: 'Colour', value: 'Red' }], product: { title: 'Cap' } })]);
   assert.deepEqual(run({}, index).data[0].options, { color: 'Red' });
-  assert.equal(run({ color: 'red' }, index).meta.total, 1);
+  assert.equal(run({ color: 'red' }, index).pageInfo.total, 1);
 });
 
 // ---- q --------------------------------------------------------------------------------------
 test('q matches SKU, title, variant title, options, category, vendor, tag, handle and ids', () => {
   assert.deepEqual(skus(run({ q: 'GLV-100' })), ['GLV-100']); // sku
-  assert.equal(run({ q: 'work gloves' }).meta.total, 1); // title
+  assert.equal(run({ q: 'work gloves' }).pageInfo.total, 1); // title
   const custom = indexOf([variantNode({ productId: 7, variantId: 77, sku: 'TEE-1', title: 'XXL / Navy', options: [{ name: 'Fit', value: 'Slim' }], product: { title: 'Tee' } })]);
-  assert.equal(run({ q: 'xxl navy' }, custom).meta.total, 1); // variant title
-  assert.equal(run({ q: 'slim' }, custom).meta.total, 1); // option value of any name
-  assert.equal(run({ q: 'yellow' }).meta.total, 2); // option value
-  assert.equal(run({ q: 'hand protection' }).meta.total, 1); // category
-  assert.equal(run({ q: 'grip co' }).meta.total, 1); // vendor
-  assert.equal(run({ q: 'visibility' }).meta.total, 1); // tag
-  assert.equal(run({ q: 'hi-vis-vest' }).meta.total, 1); // handle
-  assert.equal(run({ q: '1002' }).meta.total, 1); // product id
+  assert.equal(run({ q: 'xxl navy' }, custom).pageInfo.total, 1); // variant title
+  assert.equal(run({ q: 'slim' }, custom).pageInfo.total, 1); // option value of any name
+  assert.equal(run({ q: 'yellow' }).pageInfo.total, 2); // option value
+  assert.equal(run({ q: 'hand protection' }).pageInfo.total, 1); // category
+  assert.equal(run({ q: 'grip co' }).pageInfo.total, 1); // vendor
+  assert.equal(run({ q: 'visibility' }).pageInfo.total, 1); // tag
+  assert.equal(run({ q: 'hi-vis-vest' }).pageInfo.total, 1); // handle
+  assert.equal(run({ q: '1002' }).pageInfo.total, 1); // product id
   assert.deepEqual(skus(run({ q: '2006' })), ['VST-9']); // variant id
 });
 
 test('q is case-insensitive, trimmed and matches partial words', () => {
-  assert.equal(run({ q: '  HEL  ' }).meta.total, 5); // 4 helmet variants + Helmet Mug
-  assert.equal(run({ q: 'hel' }).meta.total, 5);
+  assert.equal(run({ q: '  HEL  ' }).pageInfo.total, 5); // 4 helmet variants + Helmet Mug
+  assert.equal(run({ q: 'hel' }).pageInfo.total, 5);
   assert.deepEqual(skus(run({ q: 'glv' })), ['GLV-100']);
 });
 
 test('multi-word q needs every word: "black helmet" finds the black helmet variants', () => {
   assert.deepEqual(skus(run({ q: 'black helmet', sort: 'title' })).sort(), ['HEL-L-BLK', 'HEL-M-BLK']);
-  assert.equal(run({ q: 'black gloves' }).meta.total, 0);
+  assert.equal(run({ q: 'black gloves' }).pageInfo.total, 0);
 });
 
 test('ids only match whole, so a short number does not hit every id', () => {
-  assert.equal(run({ q: '200' }).meta.total, 0);
-  assert.equal(run({ q: '100' }).meta.total, 1); // the SKU GLV-100 contains it, ids do not
+  assert.equal(run({ q: '200' }).pageInfo.total, 0);
+  assert.equal(run({ q: '100' }).pageInfo.total, 1); // the SKU GLV-100 contains it, ids do not
 });
 
 test('relevance: exact SKU first, then title starts-with, then contains', () => {
@@ -96,11 +97,11 @@ test('relevance: exact SKU first, then title starts-with, then contains', () => 
   ]);
   const found = run({ q: 'cap' }, index).data.map((r) => r.title);
   assert.deepEqual(found, ['Zebra', 'Cap Holder', 'Baseball Cap', 'Red Cap']);
-  assert.equal(run({ q: 'cap' }, index).meta.filters.sort, 'relevance');
+  assert.equal(run({ q: 'cap' }, index).pageInfo.filters.sort, 'relevance');
 });
 
 test('without q the default sort is title', () => {
-  assert.equal(run({}).meta.filters.sort, 'title');
+  assert.equal(run({}).pageInfo.filters.sort, 'title');
   assert.deepEqual(run({}).data.map((r) => r.title), ['Helmet Mug', 'Hi-Vis Vest', 'Safety Helmet', 'Safety Helmet', 'Safety Helmet', 'Safety Helmet', 'Work Gloves']);
 });
 
@@ -108,27 +109,27 @@ test('without q the default sort is title', () => {
 test('sku: exact, comma-separated list', () => {
   assert.deepEqual(skus(run({ sku: 'GLV-100' })), ['GLV-100']);
   assert.deepEqual(skus(run({ sku: 'glv-100, VST-9' })).sort(), ['GLV-100', 'VST-9']);
-  assert.equal(run({ sku: 'GLV' }).meta.total, 0); // exact, not partial
+  assert.equal(run({ sku: 'GLV' }).pageInfo.total, 0); // exact, not partial
 });
 
 test('category / vendor / tag / color / size are case-insensitive exact', () => {
-  assert.equal(run({ category: 'helmets' }).meta.total, 4);
-  assert.equal(run({ category: 'helmet' }).meta.total, 0);
-  assert.equal(run({ vendor: 'ACME' }).meta.total, 5);
-  assert.equal(run({ tag: 'PPE' }).meta.total, 5);
-  assert.equal(run({ color: 'black' }).meta.total, 2);
-  assert.equal(run({ size: 'l' }).meta.total, 2);
+  assert.equal(run({ category: 'helmets' }).pageInfo.total, 4);
+  assert.equal(run({ category: 'helmet' }).pageInfo.total, 0);
+  assert.equal(run({ vendor: 'ACME' }).pageInfo.total, 5);
+  assert.equal(run({ tag: 'PPE' }).pageInfo.total, 5);
+  assert.equal(run({ color: 'black' }).pageInfo.total, 2);
+  assert.equal(run({ size: 'l' }).pageInfo.total, 2);
   assert.deepEqual(skus(run({ size: 'L', color: 'Yellow' })), ['HEL-L-YEL']);
 });
 
 test('price range is inclusive', () => {
   assert.deepEqual(skus(run({ minPrice: '150', maxPrice: '300', sort: 'price' })), ['GLV-100', 'VST-9']);
-  assert.equal(run({ minPrice: '500' }).meta.total, 2);
-  assert.equal(run({ maxPrice: '80' }).meta.total, 1);
+  assert.equal(run({ minPrice: '500' }).pageInfo.total, 2);
+  assert.equal(run({ maxPrice: '80' }).pageInfo.total, 1);
 });
 
 test('inStock true / false', () => {
-  assert.equal(run({ inStock: 'true' }).meta.total, 6);
+  assert.equal(run({ inStock: 'true' }).pageInfo.total, 6);
   assert.deepEqual(skus(run({ inStock: 'false' })), ['HEL-L-BLK']);
 });
 
@@ -146,60 +147,90 @@ test('sort: title, price, stock, newest - and order flips them', () => {
   assert.deepEqual(skus(run({ sort: 'stock', order: 'asc' }))[0], 'HEL-L-BLK'); // 0
   assert.equal(run({ sort: 'newest' }).data[0].title, 'Hi-Vis Vest'); // 2026-04
   assert.equal(run({ sort: 'newest', order: 'asc' }).data[0].title, 'Helmet Mug'); // 2025-12
-  assert.equal(run({ sort: 'relevance' }).meta.filters.sort, 'relevance');
+  assert.equal(run({ sort: 'relevance' }).pageInfo.filters.sort, 'relevance');
 });
 
 // ---- pagination -----------------------------------------------------------------------------
 const big = indexOf(Array.from({ length: 120 }, (_, i) => variantNode({ productId: 5000 + i, variantId: 9000 + i, sku: `S-${String(i).padStart(3, '0')}`, product: { title: `Item ${String(i).padStart(3, '0')}` } })));
 
-test('page size is fixed at 50: page 1, middle and last', () => {
-  assert.equal(PAGE_SIZE, 50);
+test('default limit is 50: first page, following nextCursor, and the last page', () => {
+  assert.equal(DEFAULT_LIMIT, 50);
   const first = run({}, big);
   assert.equal(first.data.length, 50);
-  assert.deepEqual(first.meta, { ...first.meta, page: 1, limit: 50, total: 120, totalPages: 3, hasNextPage: true, hasPrevPage: false });
+  assert.equal(first.pageInfo.total, 120);
+  assert.equal(first.pageInfo.hasNextPage, true);
+  assert.equal(first.pageInfo.hasPreviousPage, false);
+  assert.equal(typeof first.pageInfo.nextCursor, 'string');
 
-  const second = run({ page: '2' }, big);
+  const second = run({ after: first.pageInfo.nextCursor }, big);
   assert.equal(second.data.length, 50);
   assert.equal(second.data[0].sku, 'S-050');
-  assert.equal(second.meta.hasNextPage, true);
-  assert.equal(second.meta.hasPrevPage, true);
+  assert.equal(second.pageInfo.hasNextPage, true);
+  assert.equal(second.pageInfo.hasPreviousPage, true);
 
-  const last = run({ page: '3' }, big);
+  const last = run({ after: second.pageInfo.nextCursor }, big);
   assert.equal(last.data.length, 20);
-  assert.equal(last.meta.hasNextPage, false);
-  assert.equal(last.meta.hasPrevPage, true);
+  assert.equal(last.pageInfo.hasNextPage, false);
+  assert.equal(last.pageInfo.nextCursor, null);
+  assert.equal(last.pageInfo.hasPreviousPage, true);
+
+  // and back again via previousCursor
+  const backToSecond = run({ before: last.pageInfo.previousCursor }, big);
+  assert.equal(backToSecond.data[0].sku, second.data[0].sku);
+});
+
+test('a custom limit is honoured, capped at 100', () => {
+  const page = run({ limit: '10' }, big);
+  assert.equal(page.data.length, 10);
+  assert.equal(page.pageInfo.limit, 10);
+  assert.match(parseCatalogQuery({ limit: '101' }).error, /limit must be at most 100/);
+  assert.match(parseCatalogQuery({ limit: '0' }).error, /limit must be/);
 });
 
 test('pages never overlap and never drop a row', () => {
-  const all = [1, 2, 3].flatMap((page) => run({ page: String(page) }, big).data.map((r) => r.variantId));
-  assert.equal(new Set(all).size, 120);
+  const seen = new Set();
+  let cursor;
+  for (let i = 0; i < 3; i++) {
+    const page = run(cursor ? { after: cursor } : {}, big);
+    page.data.forEach((r) => seen.add(r.variantId));
+    cursor = page.pageInfo.nextCursor;
+  }
+  assert.equal(seen.size, 120);
+  assert.equal(cursor, null);
 });
 
-test('a page beyond the end is 200-shaped: empty data, correct meta', () => {
-  const { data, meta } = run({ page: '9' }, big);
+test('after past the end is 200-shaped: empty data, correct pageInfo', () => {
+  // A cursor built against a larger (hypothetical) total, to reach an offset past the real
+  // 120-row catalog - the same situation as rows being removed after a cursor was issued.
+  const staleCursor = pageInfo({ limit: 50, offset: 150, total: 500 }).nextCursor; // -> offset 200
+  const { data, pageInfo: info } = run({ after: staleCursor }, big);
   assert.deepEqual(data, []);
-  assert.equal(meta.total, 120);
-  assert.equal(meta.totalPages, 3);
-  assert.equal(meta.hasNextPage, false);
-  assert.equal(meta.hasPrevPage, true);
+  assert.equal(info.total, 120);
+  assert.equal(info.hasNextPage, false);
+  assert.equal(info.hasPreviousPage, true);
 });
 
-test('no matches: empty data, zero pages', () => {
-  const { data, meta } = run({ q: 'zzzzzz' });
+test('a malformed cursor is a 400', () => {
+  assert.match(parseCatalogQuery({ after: 'not-a-real-cursor' }).error, /after is not a valid cursor/);
+  assert.match(parseCatalogQuery({ before: 'not-a-real-cursor' }).error, /before is not a valid cursor/);
+  assert.match(parseCatalogQuery({ after: 'x', before: 'y' }).error, /after and before cannot both be given/);
+});
+
+test('no matches: empty data, no next/previous page', () => {
+  const { data, pageInfo: info } = run({ q: 'zzzzzz' });
   assert.deepEqual(data, []);
-  assert.deepEqual([meta.total, meta.totalPages, meta.hasNextPage, meta.hasPrevPage], [0, 0, false, false]);
+  assert.deepEqual([info.total, info.hasNextPage, info.hasPreviousPage, info.nextCursor, info.previousCursor], [0, false, false, null, null]);
 });
 
-test('meta echoes the filters and carries the facet lists', () => {
-  const { meta } = run({ q: ' helmet ', color: 'Black', minPrice: '10', inStock: 'true', sku: 'A, B' });
-  assert.deepEqual(meta.filters, {
+test('pageInfo echoes the filters and does not carry facets', () => {
+  const { pageInfo: info } = run({ q: ' helmet ', color: 'Black', minPrice: '10', inStock: 'true', sku: 'A, B' });
+  assert.deepEqual(info.filters, {
     q: 'helmet', sku: ['A', 'B'], category: null, vendor: null, tag: null, color: 'Black', size: null,
     minPrice: 10, maxPrice: null, inStock: true, sort: 'relevance', order: 'desc',
   });
-  assert.deepEqual(meta.facets.colors, ['Black', 'Yellow']);
-  assert.deepEqual(meta.facets.sizes, ['L', 'M']);
-  assert.deepEqual(meta.facets.priceRange, { min: 80, max: 519 });
-  assert.ok(meta.facets.categories.includes('Helmets'));
+  // No facets: category/vendor/tags are already on each product row, so a separate
+  // categories/colors/sizes/priceRange breakdown is not computed or returned.
+  assert.equal('facets' in info, false);
 });
 
 // ---- validation (every 400) -----------------------------------------------------------------
@@ -209,11 +240,13 @@ test('invalid parameters are rejected', () => {
     assert.equal(params, undefined, JSON.stringify(query));
     assert.match(error, pattern, JSON.stringify(query));
   };
-  bad({ page: '0' }, /page/);
-  bad({ page: '-1' }, /page/);
-  bad({ page: '1.5' }, /page/);
-  bad({ page: 'abc' }, /page/);
-  bad({ page: '' }, /page/);
+  bad({ limit: '0' }, /limit/);
+  bad({ limit: '-1' }, /limit/);
+  bad({ limit: '1.5' }, /limit/);
+  bad({ limit: 'abc' }, /limit/);
+  bad({ limit: '101' }, /limit/);
+  bad({ after: 'garbage' }, /after/);
+  bad({ before: 'garbage' }, /before/);
   bad({ sort: 'cheapest' }, /sort/);
   bad({ order: 'up' }, /order/);
   bad({ minPrice: 'abc' }, /minPrice/);
@@ -228,8 +261,8 @@ test('invalid parameters are rejected', () => {
 test('edge values that are valid', () => {
   assert.equal(parseCatalogQuery({ q: 'x'.repeat(100) }).error, undefined);
   assert.equal(parseCatalogQuery({ minPrice: '10', maxPrice: '10' }).error, undefined);
-  assert.equal(parseCatalogQuery({ page: '1' }).params.page, 1);
+  assert.equal(parseCatalogQuery({ limit: '100' }).params.limit, 100);
   assert.equal(parseCatalogQuery({ fresh: 'true' }).params.fresh, true);
-  assert.equal(parseCatalogQuery({ limit: '1000', unknown: 'x' }).error, undefined); // ignored: page size is fixed
+  assert.equal(parseCatalogQuery({ page: '2', unknown: 'x' }).error, undefined); // ignored: page= no longer exists
   assert.equal(parseCatalogQuery({ q: '   ' }).params.sort, 'title');
 });
