@@ -6,7 +6,7 @@ import { syncLocalOrderFromShopify, orderMatchesShopify } from './orderSync.serv
 import type { ShopifyOrder } from '../types/shopify';
 
 // Safety net for Shopify -> MAP status sync. The webhooks (orders/updated, orders/paid,
-// fulfillments/*, fulfillment_events/create, ...) normally deliver a change within a second, but
+// fulfillments/*, ...) normally deliver a change within a second, but
 // they depend on a public callback URL that must stay registered and reachable (a tunnel URL that
 // changes silently stops every one of them). This reconciler re-reads the orders that can still
 // change straight from Shopify - one batched request per 100 orders - and mirrors any difference

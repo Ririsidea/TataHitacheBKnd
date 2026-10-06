@@ -1,6 +1,6 @@
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
-import { Op } from 'sequelize';
+import { Op, UniqueConstraintError } from 'sequelize';
 import type { NextFunction, Request, Response } from 'express';
 import { User } from '../models';
 import type { UserInstance } from '../models/User';
@@ -9,6 +9,7 @@ import { parseCursorQuery, pageInfo, likeContains } from '../utils/paginate';
 import { admin } from '../config/env';
 import { validatePassword } from '../utils/passwordPolicy';
 import { isValidEmployeeId } from '../utils/employeeId';
+import { isValidTicketId } from '../utils/ticketId';
 
 const SALT_ROUNDS = 12;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -17,6 +18,7 @@ interface PublicEmployee {
   id: number;
   email: string;
   employeeId: string;
+  ticketId: string | null;
   name: string | null;
   phone: string | null;
   mustResetPassword: boolean;
@@ -29,12 +31,30 @@ function toPublicEmployee(user: UserInstance): PublicEmployee {
     id: user.id,
     email: user.email,
     employeeId: user.employeeId,
+    ticketId: user.ticketId,
     name: user.name,
     phone: user.phone,
     mustResetPassword: user.mustResetPassword,
     isAdmin: user.email === admin.email,
     createdAt: user.createdAt,
   };
+}
+
+// A blank/whitespace-only ticketId means "no ticket id" - stored as NULL, never as "",
+// since an empty string would collide with every other user's empty string under the
+// unique index (NULL is the only value MySQL's unique index allows to repeat).
+function normalizeTicketId(value: unknown): string | null {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed === '' ? null : trimmed;
+}
+
+// True when a Sequelize UniqueConstraintError was caused by the ticket_id column
+// specifically, so it can be mapped to the same 409 the pre-save check already returns
+// for the common case - this only fires on a race (two requests at once).
+function isTicketIdConflict(err: unknown): boolean {
+  if (!(err instanceof UniqueConstraintError)) return false;
+  if (err.fields && 'ticket_id' in err.fields) return true;
+  return err.errors?.some((e) => e.path === 'ticket_id') ?? false;
 }
 
 // Always satisfies passwordPolicy (letter + number + special char, 7+ chars);
@@ -84,9 +104,10 @@ export async function listEmployees(req: Request, res: Response, next: NextFunct
 
 export async function addEmployee(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, employeeId, name, phone, password } = (req.body ?? {}) as {
+    const { email, employeeId, ticketId, name, phone, password } = (req.body ?? {}) as {
       email?: unknown;
       employeeId?: unknown;
+      ticketId?: unknown;
       name?: unknown;
       phone?: unknown;
       password?: unknown;
@@ -98,6 +119,13 @@ export async function addEmployee(req: Request, res: Response, next: NextFunctio
     const trimmedEmployeeId = typeof employeeId === 'string' ? employeeId.trim() : '';
     if (!isValidEmployeeId(trimmedEmployeeId)) {
       res.status(400).json({ success: false, message: 'employeeId must be exactly 5 digits' });
+      return;
+    }
+    // Optional: absent or blank means no ticket id at all; when given, it must be 5 digits,
+    // the same format as employeeId, but is never checked against the employeeId column.
+    const normalizedTicketId = normalizeTicketId(ticketId);
+    if (normalizedTicketId !== null && !isValidTicketId(normalizedTicketId)) {
+      res.status(400).json({ success: false, message: 'ticketId must be exactly 5 digits' });
       return;
     }
 
@@ -112,6 +140,13 @@ export async function addEmployee(req: Request, res: Response, next: NextFunctio
       res.status(409).json({ success: false, message: 'An account with that employee ID already exists' });
       return;
     }
+    if (normalizedTicketId !== null) {
+      const existingTicketId = await User.findOne({ where: { ticketId: normalizedTicketId } });
+      if (existingTicketId) {
+        res.status(409).json({ success: false, message: 'Ticket ID already exists' });
+        return;
+      }
+    }
 
     const usingGeneratedPassword = !password;
     const tempPassword = password ? String(password) : generateTempPassword();
@@ -122,14 +157,26 @@ export async function addEmployee(req: Request, res: Response, next: NextFunctio
     }
 
     const passwordHash = await bcrypt.hash(tempPassword, SALT_ROUNDS);
-    const user = await User.create({
-      email: normalizedEmail,
-      employeeId: trimmedEmployeeId,
-      name: name ? String(name) : null,
-      phone: phone ? String(phone) : null,
-      passwordHash,
-      mustResetPassword: true,
-    });
+    let user: UserInstance;
+    try {
+      user = await User.create({
+        email: normalizedEmail,
+        employeeId: trimmedEmployeeId,
+        ticketId: normalizedTicketId,
+        name: name ? String(name) : null,
+        phone: phone ? String(phone) : null,
+        passwordHash,
+        mustResetPassword: true,
+      });
+    } catch (err) {
+      // Fallback for a race between the pre-check above and this insert (two admins
+      // adding the same ticket id at once) - the DB's own unique index is the real guard.
+      if (isTicketIdConflict(err)) {
+        res.status(409).json({ success: false, message: 'Ticket ID already exists' });
+        return;
+      }
+      throw err;
+    }
 
     res.status(201).json({
       success: true,
@@ -156,9 +203,10 @@ type UpdateOutcome =
 export async function updateEmployee(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = String(req.params.id);
-    const { email, employeeId, name, phone, newPassword } = (req.body ?? {}) as {
+    const { email, employeeId, ticketId, name, phone, newPassword } = (req.body ?? {}) as {
       email?: unknown;
       employeeId?: unknown;
+      ticketId?: unknown;
       name?: unknown;
       phone?: unknown;
       newPassword?: unknown;
@@ -198,13 +246,30 @@ export async function updateEmployee(req: Request, res: Response, next: NextFunc
         user.employeeId = trimmedEmployeeId;
       }
 
+      // Optional and independent of employeeId: sending "" (or whitespace) clears it back
+      // to NULL, which is how an admin removes a ticket id. Format and uniqueness are only
+      // checked for a non-empty value, and only against ticket_id - never against employeeId.
+      if (ticketId !== undefined) {
+        const normalizedTicketId = normalizeTicketId(ticketId);
+        if (normalizedTicketId !== null) {
+          if (!isValidTicketId(normalizedTicketId)) {
+            return { kind: 'error', status: 400, message: 'ticketId must be exactly 5 digits' };
+          }
+          if (normalizedTicketId !== user.ticketId) {
+            const existing = await User.findOne({ where: { ticketId: normalizedTicketId, id: { [Op.ne]: user.id } }, transaction });
+            if (existing) return { kind: 'error', status: 409, message: 'Ticket ID already exists' };
+          }
+        }
+        user.ticketId = normalizedTicketId;
+      }
+
       if (name !== undefined) user.name = name ? String(name) : null;
       if (phone !== undefined) user.phone = phone ? String(phone) : null;
 
       // Admin-set password: hashed, never logged or returned. mustResetPassword is forced back
       // to true so the employee chooses their own password on next login rather than keeping
-      // one the admin has seen. tokenVersion is bumped so any JWT issued before this reset is
-      // rejected by middleware/authenticate.ts on its next request, even though it hasn't expired yet.
+      // one the admin has seen. Sessions end when the JWT expires; there is no server-side
+      // revocation, so an already-issued token for this user keeps working until then.
       let passwordChanged = false;
       if (typeof newPassword === 'string' && newPassword.trim() !== '') {
         const policyCheck = validatePassword(newPassword);
@@ -213,11 +278,19 @@ export async function updateEmployee(req: Request, res: Response, next: NextFunc
         }
         user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
         user.mustResetPassword = true;
-        user.tokenVersion += 1;
         passwordChanged = true;
       }
 
-      await user.save({ transaction });
+      try {
+        await user.save({ transaction });
+      } catch (err) {
+        // Fallback for a race between the pre-check above and this save (two admins
+        // editing the same ticket id at once) - the DB's own unique index is the real guard.
+        if (isTicketIdConflict(err)) {
+          return { kind: 'error', status: 409, message: 'Ticket ID already exists' };
+        }
+        throw err;
+      }
       return { kind: 'ok', user, passwordChanged };
     });
 

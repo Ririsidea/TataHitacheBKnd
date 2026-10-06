@@ -44,18 +44,42 @@ interface ColumnRow {
   nullable: string;
 }
 
-// Additive, idempotent upgrade for users.employee_id (5-digit login id) and users.token_version
-// (bumped on an admin password reset to invalidate old JWTs - see middleware/authenticate.ts).
-// Safe to re-run: only touches what isn't already in the target shape.
+// Additive, idempotent upgrade for the users table. Safe to re-run: only touches what
+// isn't already in the target shape.
+//   users.employee_id    - 5-digit login id, backfilled below for any row without one.
+//   users.ticket_id       - optional 5-digit login id, same column type as employee_id so
+//                           a leading zero survives; unlike employee_id, stays nullable and
+//                           is never backfilled (most accounts simply have no ticket id).
+//   users.role            - ENUM('admin','employee'); not yet read by any access check
+//                           (see middleware/requireAdmin.ts), kept for future use.
+//   users.token_version   - retired (sessions now end only on JWT expiry; there is no
+//                           server-side revocation); dropped if still present.
+//   users.is_active       - retired (never read or written by any current code); dropped
+//                           if still present.
 export async function ensureUserColumns(): Promise<void> {
   const [cols] = (await sequelize.query(
     "SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'"
   )) as [ColumnRow[], unknown];
   const columns = new Map(cols.map((c) => [c.name, c]));
 
-  if (!columns.has('token_version')) {
-    await sequelize.query('ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0');
-    console.log('[schema] added users.token_version');
+  // role: add it for a fresh install that predates this column; existing databases
+  // (this one included) already have it with the right type and default.
+  if (!columns.has('role')) {
+    await sequelize.query("ALTER TABLE users ADD COLUMN role ENUM('admin','employee') NOT NULL DEFAULT 'employee'");
+    console.log("[schema] added users.role");
+  }
+
+  // token_version: no longer read anywhere (middleware/authenticate.ts only checks that
+  // the user still exists); drop it if an earlier version of this app created it.
+  if (columns.has('token_version')) {
+    await sequelize.query('ALTER TABLE users DROP COLUMN token_version');
+    console.log('[schema] dropped users.token_version');
+  }
+
+  // is_active: never read or written by any current code; drop it if present.
+  if (columns.has('is_active')) {
+    await sequelize.query('ALTER TABLE users DROP COLUMN is_active');
+    console.log('[schema] dropped users.is_active');
   }
 
   const employeeIdCol = columns.get('employee_id');
@@ -108,5 +132,20 @@ export async function ensureUserColumns(): Promise<void> {
   if (nullableCheck[0]?.nullable === 'YES') {
     await sequelize.query('ALTER TABLE users MODIFY COLUMN employee_id VARCHAR(5) NOT NULL');
     console.log('[schema] set users.employee_id NOT NULL');
+  }
+
+  // ticket_id: same column type as employee_id (VARCHAR(5), so a leading zero like "01234"
+  // is preserved), but stays NULL-able - most accounts have no ticket id, and a plain
+  // UNIQUE index allows any number of NULLs in MySQL, so that's never an issue.
+  if (!columns.has('ticket_id')) {
+    await sequelize.query('ALTER TABLE users ADD COLUMN ticket_id VARCHAR(5) NULL');
+    console.log('[schema] added users.ticket_id');
+  }
+  const [ticketIdxRows] = (await sequelize.query(
+    "SELECT INDEX_NAME AS name FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'ticket_id' AND NON_UNIQUE = 0"
+  )) as [{ name: string }[], unknown];
+  if (!ticketIdxRows.length) {
+    await sequelize.query('ALTER TABLE users ADD UNIQUE INDEX ticket_id (ticket_id)');
+    console.log('[schema] added unique index users.ticket_id');
   }
 }

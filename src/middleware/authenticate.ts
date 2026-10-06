@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { jwtSecret } from '../config/env';
 import { ConfigError } from '../utils/errors';
 import { User } from '../models';
+import type { JwtPayload } from '../controllers/auth.controller';
 
 export default async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!jwtSecret) {
@@ -18,19 +19,18 @@ export default async function authenticate(req: Request, res: Response, next: Ne
   }
 
   try {
-    const decoded = jwt.verify(token, jwtSecret) as jwt.JwtPayload;
-    const userId = decoded.userId as number;
+    const decoded = jwt.verify(token, jwtSecret) as jwt.JwtPayload & JwtPayload;
 
-    // tokenVersion is bumped whenever an admin resets this user's password
-    // (admin.controller.ts updateEmployee, when newPassword is sent), so a token signed
-    // before that reset is rejected here even though its signature and expiry are still valid.
-    const user = await User.findByPk(userId);
-    if (!user || user.tokenVersion !== ((decoded.tokenVersion as number | undefined) ?? 0)) {
+    // Sessions end when the JWT expires (8h, checked by jwt.verify above); there is no
+    // server-side revocation. Re-reading the user row here only catches a deleted account -
+    // a 401 the moment its JWT is next used, rather than waiting for the token to expire.
+    const user = await User.findByPk(decoded.userId);
+    if (!user) {
       res.status(401).json({ success: false, message: 'Invalid or expired token' });
       return;
     }
 
-    req.user = { userId, email: decoded.email as string };
+    req.user = { userId: decoded.userId, email: decoded.email };
     next();
   } catch {
     res.status(401).json({ success: false, message: 'Invalid or expired token' });

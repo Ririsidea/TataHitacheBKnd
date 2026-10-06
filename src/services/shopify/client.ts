@@ -21,13 +21,43 @@ const client = axios.create({
   },
 });
 
+// TEMPORARY (perf analysis task) - PERF_DEBUG=1 logs every Shopify REST/GraphQL call's
+// duration. See the matching note in config/db.ts.
+const perfDebug = process.env.PERF_DEBUG === '1';
+if (perfDebug) {
+  client.interceptors.request.use((config) => {
+    (config as { _t0?: number })._t0 = Date.now();
+    return config;
+  });
+  client.interceptors.response.use(
+    (response) => {
+      const t0 = (response.config as { _t0?: number })._t0;
+      console.log(`[perf][shopify] ${response.config.method?.toUpperCase()} ${response.config.url} ${response.status} ${Date.now() - (t0 || Date.now())}ms`);
+      return response;
+    },
+    (error) => {
+      const t0 = error.config ? (error.config as { _t0?: number })._t0 : undefined;
+      console.log(`[perf][shopify] ${error.config?.method?.toUpperCase()} ${error.config?.url} ERROR ${Date.now() - (t0 || Date.now())}ms`);
+      return Promise.reject(error);
+    }
+  );
+}
+
 export async function listProducts(params: Record<string, unknown> = {}): Promise<unknown[]> {
   const { data } = await client.get('/products.json', { params });
   return data.products;
 }
 
+// The operation name (e.g. "CatalogVariants") from `query OpName(...) { ... }`, for the perf log.
+const OPERATION_NAME = /^\s*(?:query|mutation)\s+(\w+)/;
+
 export async function graphqlRequest<T = unknown>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  const t0 = perfDebug ? Date.now() : 0;
   const { data } = await client.post('/graphql.json', { query, variables });
+  if (perfDebug) {
+    const opName = OPERATION_NAME.exec(query)?.[1] || (/^\s*mutation/.test(query) ? 'mutation' : 'query');
+    console.log(`[perf][shopify-gql] ${opName} ${Date.now() - t0}ms`);
+  }
   if (data.errors) {
     throw new Error((data.errors as { message: string }[]).map((e) => e.message).join('; '));
   }
@@ -96,7 +126,7 @@ async function fetchCatalogFromShopify(): Promise<CatalogVariantNode[]> {
 // memory (Shopify stays the source of truth):
 //   - younger than CATALOG_FRESH_MS: served as-is.
 //   - older, up to CATALOG_MAX_STALE_MS: served immediately while one background refresh runs.
-//   - anything that can change stock/prices (a GraphQL mutation, or an inventory/product
+//   - anything that can change stock/prices (a GraphQL mutation, or the inventory
 //     webhook) calls invalidateCatalogCache(); the next read waits for a fresh copy.
 //   - listProductsCatalog({ fresh: true }) skips the cache for a live read.
 // Concurrent readers share a single in-flight Shopify fetch. Order creation never reads

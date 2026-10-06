@@ -15,6 +15,18 @@ import requestId from './middleware/requestId';
 
 const app = express();
 
+// TEMPORARY (perf analysis task) - PERF_DEBUG=1 logs every request's total time. See the
+// matching notes in config/db.ts and services/shopify/client.ts. No-op otherwise.
+if (process.env.PERF_DEBUG === '1') {
+  app.use((req, res, next) => {
+    const t0 = Date.now();
+    res.on('finish', () => {
+      console.log(`[perf][http] ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - t0}ms`);
+    });
+    next();
+  });
+}
+
 const corsOptions: cors.CorsOptions = {
   origin: true,
   credentials: true,

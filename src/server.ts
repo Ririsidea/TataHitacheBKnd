@@ -4,7 +4,7 @@ import { alertServerError } from './services/alert';
 import connectDB from './config/db';
 import { ensureOrderColumns, ensureUserColumns } from './config/ensureSchema';
 import scheduleEmployeeDailyExport from './jobs/employeeDailyExportCron';
-import scheduleOrderReconcile from './jobs/orderReconcileCron';
+// import scheduleOrderReconcile from './jobs/orderReconcileCron';
 import * as shopifyClient from './services/shopify/client';
 import { errorMessage } from './utils/errors';
 
@@ -41,7 +41,7 @@ async function start(): Promise<void> {
   await ensureOrderColumns();
   await ensureUserColumns();
   scheduleEmployeeDailyExport();
-  scheduleOrderReconcile();
+  // scheduleOrderReconcile();
 
   app.listen(port, () => {
     console.log(`Server running in ${nodeEnv} mode on port ${port}`);

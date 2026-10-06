@@ -27,6 +27,33 @@ yarn-error.log*
 # Test coverage
 coverage/
 
+# Testing
+test/
+tests/
+__tests__/
+*.test.ts
+*.spec.ts
+*.test.js
+*.spec.js
+test-*.ts
+test-*.js
+.nyc_output/
+
+# Docs
+docs/
+*.docx
+*.doc
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.pptx
+
+# API testing
+postman/
+*.postman_collection.json
+*.postman_environment.json
+
 # Editor / IDE
 .vscode/
 .idea/

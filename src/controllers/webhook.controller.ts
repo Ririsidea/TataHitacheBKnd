@@ -16,7 +16,6 @@ type Payload = ShopifyOrder & {
   location_id?: string | number;
   available?: number | null;
   order_id?: string | number;
-  order_edit?: { order_id?: string | number };
   tracking_number?: string | null;
   tracking_url?: string | null;
   tracking_company?: string | null;
@@ -81,27 +80,9 @@ export async function inventoryUpdate(req: Request, res: Response): Promise<void
   });
 }
 
-// Product data is never cached locally - the Shop/Products pages always read it
-// live from Shopify (see shopify.listProductsCatalog) - so these two handlers only
-// need to log the webhook event for the Live Events feed.
-export async function productCreate(req: Request, res: Response): Promise<void> {
-  const payload = (req.shopifyPayload ?? {}) as Payload;
-  respondThenProcess(res, async () => {
-    await logWebhook('products/create', payload);
-    shopify.invalidateCatalogCache();
-  });
-}
-
-export async function productUpdate(req: Request, res: Response): Promise<void> {
-  const payload = (req.shopifyPayload ?? {}) as Payload;
-  respondThenProcess(res, async () => {
-    await logWebhook('products/update', payload);
-    shopify.invalidateCatalogCache();
-  });
-}
-
 export async function orderCreate(req: Request, res: Response): Promise<void> {
   const payload = (req.shopifyPayload ?? {}) as Payload;
+  console.log(payload,'payload');
   respondThenProcess(res, async () => {
     await logWebhook('orders/create', payload);
     const shopifyOrderId = String(payload.id);
@@ -159,23 +140,6 @@ export async function orderUpdated(req: Request, res: Response): Promise<void> {
       await order.update(fields as Partial<OrderAttributes>, { transaction });
       await replaceLineItems(order.id, payload.line_items, transaction);
     });
-  });
-}
-
-// orders/edited: an order was edited in Shopify Admin (MAP itself cannot edit orders). The payload describes
-// the edit (quantity deltas / address change flag), not the resulting order, so the order is re-fetched from
-// Shopify and mirrored in full. Idempotent - syncing twice (this + orders/updated) is harmless.
-export async function orderEdited(req: Request, res: Response): Promise<void> {
-  const payload = (req.shopifyPayload ?? {}) as Payload;
-  respondThenProcess(res, async () => {
-    await logWebhook('orders/edited', payload);
-    const orderId = (payload.order_edit && payload.order_edit.order_id) || payload.order_id;
-    if (!orderId) {
-      console.warn('orders/edited webhook without an order id - ignored');
-      return;
-    }
-    const shopifyOrder = await shopify.getOrder(orderId);
-    await syncLocalOrderFromShopify(shopifyOrder);
   });
 }
 
@@ -246,27 +210,5 @@ export async function fulfillmentUpdate(req: Request, res: Response): Promise<vo
       { where: { shopifyOrderId: String(payload.order_id) } }
     );
     await mirrorOrderFromShopify(payload.order_id);
-  });
-}
-
-// fulfillment_events/create: Shopify / the carrier moved the shipment (in transit, out for
-// delivery, delivered, ...). The event only names the order, so the order is re-read and mirrored.
-export async function fulfillmentEventCreate(req: Request, res: Response): Promise<void> {
-  const payload = (req.shopifyPayload ?? {}) as Payload;
-  respondThenProcess(res, async () => {
-    await logWebhook('fulfillment_events/create', payload);
-    if (!payload.order_id) return;
-    await mirrorOrderFromShopify(payload.order_id);
-  });
-}
-
-export async function refundCreate(req: Request, res: Response): Promise<void> {
-  const payload = (req.shopifyPayload ?? {}) as Payload;
-  respondThenProcess(res, async () => {
-    await logWebhook('refunds/create', payload);
-    // Same as cancellation: Shopify applies any restock itself based on the refund's
-    // line-item restock settings. We just mirror status locally.
-    console.log('[inventory] refund created in Shopify for order', payload.order_id, '- restock is Shopify-managed');
-    await Order.update({ status: 'refunded', financialStatus: 'refunded' }, { where: { shopifyOrderId: String(payload.order_id) } });
   });
 }

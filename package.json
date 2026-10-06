@@ -9,8 +9,8 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
     "seed": "tsx src/scripts/seedUsers.ts",
-    "seed:dummy": "tsx scripts/seedDummyEmployees.ts",
-    "seed:dummy:remove": "tsx scripts/seedDummyEmployees.ts --remove",
+    "seed:employees": "tsx scripts/seedEmployees.ts",
+    "seed:employees:clean": "tsx scripts/seedEmployees.ts --clean",
     "test": "tsx --test \"test/**/*.test.ts\""
   },
   "keywords": [],

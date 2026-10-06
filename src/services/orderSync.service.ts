@@ -47,8 +47,8 @@ function lineItemsFromShopify(shopifyOrder: ShopifyOrder): MirroredLine[] {
 }
 
 // Mirrors a full Shopify order into MySQL: orders + order_line_items, inside one transaction
-// with a row lock. Idempotent: syncing the same order twice (orders/updated + orders/edited
-// webhooks + the background reconciler) ends in the same state and can never duplicate line items.
+// with a row lock. Idempotent: syncing the same order twice (a fulfillment webhook and the
+// background reconciler, for example) ends in the same state and can never duplicate line items.
 export async function syncLocalOrderFromShopify(shopifyOrder: ShopifyOrder): Promise<number | null> {
   const shopifyOrderId = String(shopifyOrder.id);
 
