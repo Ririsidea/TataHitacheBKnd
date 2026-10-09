@@ -176,3 +176,75 @@ export async function ensureDummyFlag(): Promise<void> {
   const flagged = (result as { affectedRows?: number }).affectedRows || 0;
   if (flagged) console.log(`[schema] flagged ${flagged} @${LEGACY_SEED_DOMAIN} users as is_dummy`);
 }
+
+// Additive-only columns that let the daily export sheet carry the full order detail (address,
+// totals, payment, fulfillment dates) straight from the DB instead of calling Shopify at export
+// time. Values come only from the raw webhook payload (see services/orderDetails.ts) - never
+// from a live Shopify read, which this store's app returns with address/customer PII redacted.
+//
+// orders.raw_payload is deliberately NOT a Sequelize model attribute (see models/Order.ts) -
+// it is written and read only via raw SQL in services/orderDetails.ts, so it can never be
+// picked up by order.toJSON() and leak out of an existing API response by accident.
+export async function ensureOrderDetailColumns(): Promise<void> {
+  const [orderCols] = (await sequelize.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'"
+  )) as [{ name: string }[], unknown];
+  const haveOrderCol = new Set(orderCols.map((c) => c.name));
+
+  const orderColumnsToAdd: [string, string][] = [
+    ['order_number', 'VARCHAR(20) NULL'],
+    ['shipping_name', 'VARCHAR(255) NULL'],
+    ['shipping_address1', 'VARCHAR(500) NULL'],
+    ['shipping_address2', 'VARCHAR(500) NULL'],
+    ['shipping_city', 'VARCHAR(255) NULL'],
+    ['shipping_state', 'VARCHAR(255) NULL'],
+    ['shipping_zip', 'VARCHAR(20) NULL'],
+    ['shipping_country', 'VARCHAR(255) NULL'],
+    ['shipping_phone', 'VARCHAR(30) NULL'],
+    ['billing_name', 'VARCHAR(255) NULL'],
+    ['billing_address1', 'VARCHAR(500) NULL'],
+    ['billing_address2', 'VARCHAR(500) NULL'],
+    ['billing_city', 'VARCHAR(255) NULL'],
+    ['billing_state', 'VARCHAR(255) NULL'],
+    ['billing_zip', 'VARCHAR(20) NULL'],
+    ['billing_country', 'VARCHAR(255) NULL'],
+    ['billing_phone', 'VARCHAR(30) NULL'],
+    ['customer_email', 'VARCHAR(255) NULL'],
+    ['customer_phone', 'VARCHAR(30) NULL'],
+    ['subtotal_price', 'DECIMAL(10,2) NULL'],
+    ['total_discount', 'DECIMAL(10,2) NULL'],
+    ['total_tax', 'DECIMAL(10,2) NULL'],
+    ['shipping_charge', 'DECIMAL(10,2) NULL'],
+    ['payment_method', 'VARCHAR(255) NULL'],
+    ['order_note', 'TEXT NULL'],
+    ['tags', 'VARCHAR(500) NULL'],
+    ['cancel_reason', 'VARCHAR(100) NULL'],
+    ['cancelled_at', 'DATETIME NULL'],
+    ['shipped_at', 'DATETIME NULL'],
+    ['delivered_at', 'DATETIME NULL'],
+    // Backend-only, see the function comment above - never a model attribute.
+    ['raw_payload', 'LONGTEXT NULL'],
+  ];
+  for (const [name, ddl] of orderColumnsToAdd) {
+    if (!haveOrderCol.has(name)) {
+      await sequelize.query(`ALTER TABLE orders ADD COLUMN ${name} ${ddl}`);
+      console.log(`[schema] added orders.${name}`);
+    }
+  }
+
+  const [lineCols] = (await sequelize.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_line_items'"
+  )) as [{ name: string }[], unknown];
+  const haveLineCol = new Set(lineCols.map((c) => c.name));
+  const lineColumnsToAdd: [string, string][] = [
+    ['variant_title', 'VARCHAR(255) NULL'],
+    ['line_discount', 'DECIMAL(10,2) NULL'],
+    ['line_tax', 'DECIMAL(10,2) NULL'],
+  ];
+  for (const [name, ddl] of lineColumnsToAdd) {
+    if (!haveLineCol.has(name)) {
+      await sequelize.query(`ALTER TABLE order_line_items ADD COLUMN ${name} ${ddl}`);
+      console.log(`[schema] added order_line_items.${name}`);
+    }
+  }
+}

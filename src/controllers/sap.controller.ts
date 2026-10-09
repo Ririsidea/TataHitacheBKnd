@@ -92,11 +92,14 @@ export async function viewDailyExport(req: Request, res: Response, next: NextFun
       return;
     }
 
+    // Exports written before the .xlsx switch are still .csv on disk - both must stay viewable.
     const workbook = new ExcelJS.Workbook();
-    const worksheet = await workbook.csv.readFile(filePath);
+    const worksheet = record.fileName.toLowerCase().endsWith('.xlsx')
+      ? (await workbook.xlsx.readFile(filePath)).worksheets[0]
+      : await workbook.csv.readFile(filePath);
     let columns: unknown[] = [];
     const rows: unknown[][] = [];
-    worksheet.eachRow((row, rowNumber) => {
+    worksheet?.eachRow((row, rowNumber) => {
       // ExcelJS row.values is 1-indexed with an empty slot at index 0.
       const values = (row.values as unknown[]).slice(1);
       if (rowNumber === 1) {

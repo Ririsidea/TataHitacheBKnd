@@ -1,24 +1,42 @@
+
 import cron from 'node-cron';
 import { runDailyEmployeeExports } from '../services/orderExport.service';
 import { errorMessage } from '../utils/errors';
 
-// Runs once daily at 00:05 server time and exports the PREVIOUS full calendar day
-// (00:00-23:59, in the server process's local timezone - not hardcoded to IST; see the
-// TZ note in orderExport.service.ts's dayBounds/toDateOnly), which is guaranteed to
-// be complete by the time this runs. A day with zero orders still gets a
-// recorded (0-order) export for every employee - that is expected, not an error.
+function currentDateInIST(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
 export default function scheduleEmployeeDailyExport(): void {
-  cron.schedule('5 0 * * *', async () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    try {
-      const result = await runDailyEmployeeExports(yesterday);
-      console.log(
-        `[Employee Daily Export] ${result.exportDate}: ${result.created} created, ` +
-          `${result.skipped} already existed, ${result.failed} failed (of ${result.totalEmployees} employees)`
-      );
-    } catch (err) {
-      console.error('[Employee Daily Export] Failed to run:', errorMessage(err));
-    }
-  });
+  cron.schedule(
+    '*/5 * * * *',
+    async () => {
+      const exportDate = currentDateInIST();
+
+      try {
+        const result = await runDailyEmployeeExports(exportDate);
+
+        console.log(
+          `[Employee Daily Export] ${result.exportDate}: ` +
+            `${result.created} created, ` +
+            `${result.skipped} already existed, ` +
+            `${result.noOrders} had no orders, ` +
+            `${result.excludedOrders} excluded, ` +
+            `${result.failed} failed ` +
+            `(of ${result.totalEmployees} employees)`
+        );
+      } catch (err: unknown) {
+        console.error(
+          '[Employee Daily Export] Failed:',
+          errorMessage(err)
+        );
+      }
+    },
+    { timezone: 'Asia/Kolkata' }
+  );
 }

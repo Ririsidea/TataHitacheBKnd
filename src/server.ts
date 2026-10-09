@@ -2,7 +2,8 @@ import app from './app';
 import { port, nodeEnv, map, shopify, jwtSecret, admin } from './config/env';
 import { alertServerError } from './services/alert';
 import connectDB from './config/db';
-import { ensureOrderColumns, ensureUserColumns } from './config/ensureSchema';
+import { ensureOrderColumns, ensureUserColumns, ensureOrderDetailColumns } from './config/ensureSchema';
+import { AdminDailyExport } from './models';
 import scheduleEmployeeDailyExport from './jobs/employeeDailyExportCron';
 // import scheduleOrderReconcile from './jobs/orderReconcileCron';
 import * as shopifyClient from './services/shopify/client';
@@ -40,6 +41,10 @@ async function start(): Promise<void> {
   await connectDB();
   await ensureOrderColumns();
   await ensureUserColumns();
+  await ensureOrderDetailColumns();
+  // New table, no migration tool/schema.sql in this project (see config/ensureSchema.ts's own
+  // comment) - a model-scoped sync() only creates it if missing, never touches any other table.
+  await AdminDailyExport.sync();
   scheduleEmployeeDailyExport();
   // scheduleOrderReconcile();
 

@@ -95,6 +95,27 @@ export interface ShopifyTracking {
   carrier?: string;
 }
 
+// The order-status label the daily export sheet shows (distinct from `status`/`orderStage`
+// above, which the app's own screens use to gate actions): cancelled -> Cancelled; pending or
+// authorized payment -> Awaiting approval; paid -> Approved; fulfilled -> Shipped; delivered ->
+// Delivered. There is no payroll-approval workflow anywhere in this codebase ("Approved" here
+// means Shopify payment approved, not a payroll sign-off) - kept in one helper so the export is
+// the only place this wording lives.
+export function exportStatusLabel(order: OrderLike): string {
+  const status = lower(order.status);
+  const financial = lower(order.financialStatus);
+  const fulfillment = lower(order.fulfillmentStatus);
+  const delivery = lower((order as OrderLike & { deliveryStatus?: string | null }).deliveryStatus);
+  if (status === 'cancelled') return 'Cancelled';
+  if (delivery === 'delivered') return 'Delivered';
+  if (fulfillment === 'fulfilled') return 'Shipped';
+  if (financial === 'paid') return 'Approved';
+  if (financial === 'pending' || financial === 'authorized' || !financial) return 'Awaiting approval';
+  // Anything else (refunded, voided, partially_refunded, ...) - show Shopify's own word rather
+  // than inventing a mapping that was not asked for.
+  return financial.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // Courier tracking of the most recent live fulfillment that has any. Only the fields Shopify
 // actually has are returned, so a sync never blanks tracking that was entered by hand.
 export function shopifyTracking(shopifyOrder: ShopifyOrder): ShopifyTracking {

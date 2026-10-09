@@ -9,6 +9,10 @@ export interface OrderLineItemAttributes {
   quantity: number | null;
   // DECIMAL columns come back from MySQL as strings.
   price: string | number | null;
+  // Order detail (see services/orderDetails.ts) - from the webhook payload only.
+  variantTitle: string | null;
+  lineDiscount: string | number | null;
+  lineTax: string | number | null;
 }
 
 export type OrderLineItemCreationAttributes = Partial<OrderLineItemAttributes> & { orderId: number };
@@ -26,6 +30,9 @@ const OrderLineItem = sequelize.define<OrderLineItemInstance>(
     title: { type: DataTypes.STRING(500) },
     quantity: { type: DataTypes.INTEGER },
     price: { type: DataTypes.DECIMAL(10, 2) },
+    variantTitle: { type: DataTypes.STRING(255), field: 'variant_title' },
+    lineDiscount: { type: DataTypes.DECIMAL(10, 2), field: 'line_discount' },
+    lineTax: { type: DataTypes.DECIMAL(10, 2), field: 'line_tax' },
   },
   {
     tableName: 'order_line_items',

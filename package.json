@@ -12,6 +12,8 @@
     "seed:employees": "tsx scripts/seedEmployees.ts",
     "seed:employees:clean": "tsx scripts/seedEmployees.ts --clean",
     "seed:employees:rename-domain": "tsx src/scripts/migrateDummyEmailDomain.ts",
+    "backfill:order-details": "tsx src/scripts/backfillOrderDetails.ts",
+    "export:daily": "tsx src/scripts/runDailyExport.ts",
     "test": "tsx --test \"test/**/*.test.ts\""
   },
   "keywords": [],
