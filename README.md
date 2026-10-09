@@ -106,9 +106,17 @@ result; it uses the same 12 columns and exclusion rule, but keeps its original
 `sap-orders-<email>-<date>.csv`-style filename (now `.xlsx`) rather than the new
 `<exportDate>_<employeeId>` convention, which was asked for the daily cron/admin sheets specifically.
 
-File names: per-employee `exports/daily/<exportDate>_<employeeId>.xlsx` (falls back to an email
-slug on the rare order whose email matches no `users` row). New files are never written to
-`exports/daily/all`; that directory is historical-only.
+File names: per-employee `<exportDate>_<employeeId>.xlsx` (falls back to an email slug on the
+rare order whose email matches no `users` row). New cron workbooks are uploaded directly to
+Cloudinary as private raw files and are not permanently written to `exports/daily` or
+`exports/daily/all`. Existing local historical files remain readable.
+
+Cloudinary export storage requires `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and
+`CLOUDINARY_API_SECRET`. The database stores the Cloudinary public ID, raw/private resource
+metadata, filename, export date, employee ID, and employee email. Employee view/download routes
+verify ownership before proxying the private file; admin routes retain their existing permissions.
+If an upload or database write fails, the employee export is reported as failed and no successful
+`DailyExport` record is created. The unique employee/date index handles overlapping cron runs.
 
 **Columns always blank today, and why**: Address for any order placed before Protected Customer
 Data access is granted *and* whose checkout never collected it (see the section above); Name

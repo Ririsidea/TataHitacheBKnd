@@ -1,11 +1,13 @@
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { Op } from 'sequelize';
 import ExcelJS from 'exceljs';
 import type { NextFunction, Request, Response } from 'express';
 import { DailyExport } from '../models';
 import type { DailyExportInstance } from '../models/DailyExport';
 import { dailyExportDir, generateDailyExport } from '../services/orderExport.service';
+import { cloudinaryFileFromRecord, destroyPrivateRawFile, downloadPrivateRawFile } from '../services/cloudinaryStorage.service';
 import { parseCursorQuery, parseDayRange, pageInfo } from '../utils/paginate';
 import { httpError, errorMessage } from '../utils/errors';
 
@@ -16,12 +18,12 @@ export async function exportDailyOrders(req: Request, res: Response, next: NextF
       res.status(401).json({ success: false, message: 'Authentication required' });
       return;
     }
-    const { fileName, count } = await generateDailyExport(email);
+    const { fileName, count, downloadUrl } = await generateDailyExport(email);
     res.json({
       success: true,
       message: `Exported ${count} order(s) for your account`,
       file: fileName,
-      downloadUrl: `/exports/${fileName}`,
+      downloadUrl,
     });
   } catch (err) {
     next(err);
@@ -35,8 +37,15 @@ async function findOwnedDailyExport(req: Request): Promise<DailyExportInstance> 
   // order ownership checks in map.controller.ts.
   // Someone else's export is answered exactly like a missing one (no 403 in the client contract, and
   // it does not reveal that the id exists).
-  if (record.email !== req.user?.email) throw httpError(404, 'Export not found');
+  const ownerEmail = String(req.user?.email || '').trim().toLowerCase();
+  if (record.email.trim().toLowerCase() !== ownerEmail) throw httpError(404, 'Export not found');
   return record;
+}
+
+async function readExportBuffer(record: DailyExportInstance): Promise<Buffer> {
+  const cloudinaryFile = cloudinaryFileFromRecord(record);
+  if (cloudinaryFile) return downloadPrivateRawFile(cloudinaryFile);
+  return fs.promises.readFile(path.join(dailyExportDir(), record.fileName));
 }
 
 // The signed-in employee's daily exports, newest first, one cursor page at a time.
@@ -86,17 +95,18 @@ export async function listDailyExports(req: Request, res: Response, next: NextFu
 export async function viewDailyExport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const record = await findOwnedDailyExport(req);
-    const filePath = path.join(dailyExportDir(), record.fileName);
-    if (!fs.existsSync(filePath)) {
+    let buffer: Buffer;
+    try {
+      buffer = await readExportBuffer(record);
+    } catch {
       res.status(404).json({ success: false, message: 'Export file is no longer available' });
       return;
     }
 
-    // Exports written before the .xlsx switch are still .csv on disk - both must stay viewable.
     const workbook = new ExcelJS.Workbook();
     const worksheet = record.fileName.toLowerCase().endsWith('.xlsx')
-      ? (await workbook.xlsx.readFile(filePath)).worksheets[0]
-      : await workbook.csv.readFile(filePath);
+      ? (await workbook.xlsx.load(buffer as any)).worksheets[0]
+      : await workbook.csv.read(Readable.from([buffer]));
     let columns: unknown[] = [];
     const rows: unknown[][] = [];
     worksheet?.eachRow((row, rowNumber) => {
@@ -128,12 +138,16 @@ export async function viewDailyExport(req: Request, res: Response, next: NextFun
 export async function downloadDailyExport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const record = await findOwnedDailyExport(req);
-    const filePath = path.join(dailyExportDir(), record.fileName);
-    if (!fs.existsSync(filePath)) {
+    let buffer: Buffer;
+    try {
+      buffer = await readExportBuffer(record);
+    } catch {
       res.status(404).json({ success: false, message: 'Export file is no longer available' });
       return;
     }
-    res.download(filePath, record.fileName);
+    res.attachment(record.fileName);
+    res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
   } catch (err) {
     next(err);
   }
@@ -142,12 +156,15 @@ export async function downloadDailyExport(req: Request, res: Response, next: Nex
 export async function deleteDailyExport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const record = await findOwnedDailyExport(req);
-    const filePath = path.join(dailyExportDir(), record.fileName);
-    await fs.promises.unlink(filePath).catch((unlinkErr: NodeJS.ErrnoException) => {
-      if (unlinkErr.code !== 'ENOENT') {
-        console.error('[daily-export] failed to remove file', filePath, errorMessage(unlinkErr));
-      }
-    });
+    const cloudinaryFile = cloudinaryFileFromRecord(record);
+    if (cloudinaryFile) {
+      await destroyPrivateRawFile(cloudinaryFile).catch((err) => console.error('[daily-export] Cloudinary delete failed', errorMessage(err)));
+    } else {
+      const filePath = path.join(dailyExportDir(), record.fileName);
+      await fs.promises.unlink(filePath).catch((unlinkErr: NodeJS.ErrnoException) => {
+        if (unlinkErr.code !== 'ENOENT') console.error('[daily-export] failed to remove file', filePath, errorMessage(unlinkErr));
+      });
+    }
     await record.destroy();
     res.json({ success: true, message: 'Export deleted successfully' });
   } catch (err) {

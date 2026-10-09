@@ -13,6 +13,7 @@ import { Op } from 'sequelize';
 import connectDB from '../config/db';
 import { Order, OrderLineItem, User, DailyExport, AdminDailyExport } from '../models';
 import { runDailyEmployeeExports, isExcludedOrder, summarizeExcludedOrders, dayBounds, toDateOnly, dailyExportDir, allOrdersExportDir, previousDateInIST } from '../services/orderExport.service';
+import { cloudinaryFileFromRecord, destroyPrivateRawFile } from '../services/cloudinaryStorage.service';
 import { errorMessage } from '../utils/errors';
 
 interface Args {
@@ -35,7 +36,9 @@ function parseArgs(argv: string[]): Args {
 async function removeExistingRecords(exportDate: string): Promise<void> {
   const perEmployee = await DailyExport.findAll({ where: { exportDate } });
   for (const record of perEmployee) {
-    await fs.promises.unlink(path.join(dailyExportDir(), record.fileName)).catch(() => undefined);
+    const cloudinaryFile = cloudinaryFileFromRecord(record);
+    if (cloudinaryFile) await destroyPrivateRawFile(cloudinaryFile).catch(() => undefined);
+    else await fs.promises.unlink(path.join(dailyExportDir(), record.fileName)).catch(() => undefined);
   }
   if (perEmployee.length) await DailyExport.destroy({ where: { exportDate } });
 

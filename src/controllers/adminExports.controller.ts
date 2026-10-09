@@ -3,8 +3,9 @@ import fs from 'fs';
 import { Op } from 'sequelize';
 import ExcelJS from 'exceljs';
 import type { NextFunction, Request, Response } from 'express';
-import { AdminDailyExport, Order, OrderLineItem } from '../models';
-import { allOrdersExportDir, dayBounds, toDateOnly } from '../services/orderExport.service';
+import { AdminDailyExport, DailyExport, Order, OrderLineItem } from '../models';
+import { addressCell, allOrdersExportDir, dailyExportDir, dayBounds, toDateOnly } from '../services/orderExport.service';
+import { cloudinaryFileFromRecord, downloadPrivateRawFile } from '../services/cloudinaryStorage.service';
 import { exportStatusLabel } from '../utils/orderStatus';
 import { parseCursorQuery, parseDayRange, pageInfo } from '../utils/paginate';
 import { httpError } from '../utils/errors';
@@ -38,7 +39,7 @@ export async function listAdminDailyExports(req: Request, res: Response, next: N
       where.exportDate = exportDate;
     }
 
-    const { rows, count } = await AdminDailyExport.findAndCountAll({
+    const adminResult = await AdminDailyExport.findAndCountAll({
       where,
       order: [
         ['exportDate', 'DESC'],
@@ -47,6 +48,28 @@ export async function listAdminDailyExports(req: Request, res: Response, next: N
       limit,
       offset,
     });
+
+    // Current cron jobs create one authenticated employee export per day. Older deployments
+    // may also have consolidated AdminDailyExport files; keep those records authoritative when
+    // present, and expose the current per-employee files to authorized admins otherwise.
+    const { rows, count } = adminResult.count > 0
+      ? adminResult
+      : await DailyExport.findAndCountAll({
+          where: range.from || range.to
+            ? {
+                exportDate: {
+                  ...(range.from ? { [Op.gte]: range.from } : {}),
+                  ...(range.to ? { [Op.lte]: range.to } : {}),
+                },
+              }
+            : {},
+          order: [
+            ['exportDate', 'DESC'],
+            ['id', 'DESC'],
+          ],
+          limit,
+          offset,
+        });
 
     res.json({
       success: true,
@@ -58,24 +81,41 @@ export async function listAdminDailyExports(req: Request, res: Response, next: N
   }
 }
 
-async function loadRecord(req: Request): Promise<InstanceType<typeof AdminDailyExport>> {
-  const record = await AdminDailyExport.findByPk(String(req.params.id));
-  if (!record) throw httpError(404, 'Export not found');
-  return record;
+type AdminExportRecord =
+  | { source: 'consolidated'; record: InstanceType<typeof AdminDailyExport> }
+  | { source: 'employee'; record: InstanceType<typeof DailyExport> };
+
+async function readAdminExportBuffer(loaded: AdminExportRecord): Promise<Buffer> {
+  if (loaded.source === 'employee') {
+    const cloudinaryFile = cloudinaryFileFromRecord(loaded.record);
+    if (cloudinaryFile) return downloadPrivateRawFile(cloudinaryFile);
+  }
+  return fs.promises.readFile(path.join(loaded.source === 'consolidated' ? allOrdersExportDir() : dailyExportDir(), loaded.record.fileName));
+}
+
+async function loadRecord(req: Request): Promise<AdminExportRecord> {
+  const consolidated = await AdminDailyExport.findByPk(String(req.params.id));
+  if (consolidated) return { source: 'consolidated', record: consolidated };
+  const employee = await DailyExport.findByPk(String(req.params.id));
+  if (employee) return { source: 'employee', record: employee };
+  throw httpError(404, 'Export not found');
 }
 
 // Same inline-preview shape as GET /api/sap/daily-exports/:id/view, for the admin sheet.
 export async function getAdminDailyExport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const record = await loadRecord(req);
-    const filePath = path.join(allOrdersExportDir(), record.fileName);
-    if (!fs.existsSync(filePath)) {
+    const loaded = await loadRecord(req);
+    const record = loaded.record;
+    let buffer: Buffer;
+    try {
+      buffer = await readAdminExportBuffer(loaded);
+    } catch {
       res.status(404).json({ success: false, message: 'Export file is no longer available' });
       return;
     }
 
     const workbook = new ExcelJS.Workbook();
-    const worksheet = (await workbook.xlsx.readFile(filePath)).worksheets[0];
+    const worksheet = (await workbook.xlsx.load(buffer as any)).worksheets[0];
     let columns: unknown[] = [];
     const rows: unknown[][] = [];
     worksheet?.eachRow((row, rowNumber) => {
@@ -102,13 +142,18 @@ export async function getAdminDailyExport(req: Request, res: Response, next: Nex
 
 export async function downloadAdminDailyExport(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const record = await loadRecord(req);
-    const filePath = path.join(allOrdersExportDir(), record.fileName);
-    if (!fs.existsSync(filePath)) {
+    const loaded = await loadRecord(req);
+    const record = loaded.record;
+    let buffer: Buffer;
+    try {
+      buffer = await readAdminExportBuffer(loaded);
+    } catch {
       res.status(404).json({ success: false, message: 'Export file is no longer available' });
       return;
     }
-    res.download(filePath, record.fileName);
+    res.attachment(record.fileName);
+    res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
   } catch (err) {
     next(err);
   }
@@ -133,7 +178,13 @@ export async function getTodayOrders(req: Request, res: Response, next: NextFunc
         date: toDateOnly(start),
         count: orders.length,
         total: Math.round(total * 100) / 100,
-        orders: orders.map((order) => ({ ...order.toJSON(), orderStatusLabel: exportStatusLabel(order) })),
+        orders: orders.map((order) => ({
+          ...order.toJSON(),
+          // Keep the API response consistent with the XLSX export. The address is assembled
+          // only from the persisted order columns; no address data is invented here.
+          shippingAddress: addressCell(order),
+          orderStatusLabel: exportStatusLabel(order),
+        })),
       },
     });
   } catch (err) {

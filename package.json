@@ -25,6 +25,7 @@
     "@devzoy/indian-pincode-geo": "^2.1.0",
     "axios": "^1.20.0",
     "bcrypt": "^6.0.0",
+    "cloudinary": "^2.11.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",

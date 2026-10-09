@@ -248,3 +248,29 @@ export async function ensureOrderDetailColumns(): Promise<void> {
     }
   }
 }
+
+// Additive upgrade for daily export storage metadata. Existing local export rows remain readable;
+// new cron-generated rows use Cloudinary raw/private storage.
+export async function ensureDailyExportColumns(): Promise<void> {
+  const [rows] = (await sequelize.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'daily_exports'"
+  )) as [{ name: string }[], unknown];
+  if (!rows.length) return;
+  const have = new Set(rows.map((row) => row.name));
+  const additions: [string, string][] = [
+    ['employee_id', 'VARCHAR(100) NULL'],
+    ['storage_provider', "VARCHAR(32) NOT NULL DEFAULT 'local'"],
+    ['cloudinary_public_id', 'VARCHAR(500) NULL'],
+    ['cloudinary_resource_type', 'VARCHAR(32) NULL'],
+    ['cloudinary_type', 'VARCHAR(32) NULL'],
+    ['cloudinary_version', 'BIGINT NULL'],
+    ['cloudinary_bytes', 'BIGINT NULL'],
+    ['cloudinary_format', 'VARCHAR(32) NULL'],
+  ];
+  for (const [name, ddl] of additions) {
+    if (!have.has(name)) {
+      await sequelize.query(`ALTER TABLE daily_exports ADD COLUMN ${name} ${ddl}`);
+      console.log(`[schema] added daily_exports.${name}`);
+    }
+  }
+}

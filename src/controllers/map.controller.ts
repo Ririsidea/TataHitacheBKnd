@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Order, OrderLineItem, User } from '../models';
+import type { OrderCreationAttributes } from '../models/Order';
 import * as shopify from '../services/shopify/client';
 import { parseCatalogQuery, searchCatalog } from '../services/catalogSearch';
 import { getCatalogIndex, lookupProduct } from '../services/catalog.service';
@@ -16,6 +17,27 @@ import { readRenamed } from '../utils/fieldAliases';
 import type { SkuVariantNode } from '../types/shopify';
 
 const MAX_KEY_LENGTH = 100;
+
+function storedShippingAddress(address: Record<string, unknown> | undefined): Partial<OrderCreationAttributes> {
+  if (!address) return {};
+  const text = (value: unknown): string | undefined => {
+    if (value === null || value === undefined) return undefined;
+    const valueText = String(value).trim();
+    return valueText || undefined;
+  };
+  const firstName = text(address.first_name);
+  const lastName = text(address.last_name);
+  return {
+    shippingName: text(address.name) || [firstName, lastName].filter(Boolean).join(' ') || undefined,
+    shippingAddress1: text(address.address1),
+    shippingAddress2: text(address.address2),
+    shippingCity: text(address.city),
+    shippingState: text(address.province),
+    shippingZip: text(address.zip),
+    shippingCountry: text(address.country),
+    shippingPhone: text(address.phone),
+  };
+}
 
 // Product list + search: one cursor page of variant rows, ?limit= (default 50) at a time
 // (see services/catalogSearch.ts).
@@ -335,6 +357,9 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       fulfillmentStatus: shopifyOrder.fulfillment_status,
       totalPrice: shopifyOrder.total_price ? Number(shopifyOrder.total_price) : undefined,
       channel,
+      // The create-order route receives the checkout address directly. Persist it now so
+      // exports do not depend on a later Shopify webhook arriving with protected PII.
+      ...storedShippingAddress(shippingAddress),
     });
 
     const orderLineItems = (shopifyOrder.line_items || []).map((li) => ({

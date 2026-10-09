@@ -1,4 +1,5 @@
 import { Sequelize } from 'sequelize';
+import mysql2 from 'mysql2/promise';
 import { mysql } from './env';
 
 // TEMPORARY (perf analysis task) - set PERF_DEBUG=1 to log every SQL query's duration.
@@ -16,8 +17,22 @@ export const sequelize = new Sequelize(mysql.database, mysql.user, mysql.passwor
 
 export default async function connectDB(): Promise<void> {
   try {
+    const connection = await mysql2.createConnection({
+      host: mysql.host,
+      port: mysql.port,
+      user: mysql.user,
+      password: mysql.password,
+    });
+    try {
+      const databaseName = mysql.database.replace(/`/g, '``');
+      await connection.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``);
+    } finally {
+      await connection.end();
+    }
+
     await sequelize.authenticate();
     console.log('MySQL connected');
+    await sequelize.sync();
   } catch (err) {
     console.error('MySQL connect failed:', err instanceof Error ? err.message : err);
     throw err;

@@ -8,6 +8,7 @@ import type { OrderLineItemInstance } from '../models/OrderLineItem';
 import type { UserInstance } from '../models/User';
 import { sap } from '../config/env';
 import { errorMessage } from '../utils/errors';
+import { destroyPrivateRawFile, privateDownloadUrl, uploadPrivateRawXlsx, type CloudinaryRawFile } from './cloudinaryStorage.service';
 
 // Export generation shared by the employeeDailyExportCron job (src/jobs), the per-employee HTTP
 // handlers in controllers/sap.controller.ts, and the admin HTTP handlers in
@@ -19,6 +20,19 @@ import { errorMessage } from '../utils/errors';
 
 const DAILY_EXPORT_SUBDIR = 'daily';
 const ALL_ORDERS_SUBDIR = 'all';
+
+type DailyExportStorage = {
+  upload: typeof uploadPrivateRawXlsx;
+  destroy: typeof destroyPrivateRawFile;
+};
+
+let dailyExportStorage: DailyExportStorage = { upload: uploadPrivateRawXlsx, destroy: destroyPrivateRawFile };
+
+// Test-only seam: production always uses the Cloudinary adapter above. Keeping the seam here
+// lets export tests verify workbook/database behavior without requiring real Cloudinary secrets.
+export function setDailyExportStorageForTests(storage: DailyExportStorage | null): void {
+  dailyExportStorage = storage || { upload: uploadPrivateRawXlsx, destroy: destroyPrivateRawFile };
+}
 
 export function dailyExportDir(): string {
   return path.resolve(sap.localDir, DAILY_EXPORT_SUBDIR);
@@ -104,7 +118,7 @@ export function summarizeExcludedOrders(orders: OrderInstance[]): ExcludedOrderS
 // address1, address2, city, state, zip, country - comma-joined, empty parts skipped. A plain
 // string value (not a number, no apostrophe hack): ExcelJS writes a JS string as a true string
 // cell, so Excel never auto-detects it as numeric - ones like "442203" stay text on their own.
-function addressCell(order: OrderInstance): string {
+export function addressCell(order: OrderInstance): string {
   return [order.shippingAddress1, order.shippingAddress2, order.shippingCity, order.shippingState, order.shippingZip, order.shippingCountry]
     .map((part) => (part || '').trim())
     .filter(Boolean)
@@ -269,6 +283,7 @@ export interface ExportFile {
   fileName: string;
   count: number;
   excludedCount: number;
+  downloadUrl?: string;
 }
 
 // On-demand export for the signed-in employee ("Export My Orders" button, POST
@@ -288,17 +303,20 @@ export async function generateDailyExport(email: string): Promise<ExportFile> {
   const todayLabel = formatDateOnly(toDateOnly(new Date()));
   const stats = buildOrdersWorksheet(workbook, orders, usersByEmail, todayLabel);
 
-  const dir = path.resolve(sap.localDir);
-  fs.mkdirSync(dir, { recursive: true });
   const datePart = new Date().toISOString().slice(0, 10);
   // Slug of the employee's email, so two employees exporting on the same day never collide.
   const employeeSlug = email.replace(/[^a-z0-9]+/gi, '-');
   const fileName = `sap-orders-${employeeSlug}-${datePart}.xlsx`;
-  const filePath = path.join(dir, fileName);
+  const workbookBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const cloudinary = await dailyExportStorage.upload(workbookBuffer, `thcm/on-demand/${employeeSlug}/${datePart}`);
 
-  await workbook.xlsx.writeFile(filePath);
-
-  return { filePath, fileName, count: stats.includedCount, excludedCount: stats.excludedCount };
+  return {
+    filePath: '',
+    fileName,
+    count: stats.includedCount,
+    excludedCount: stats.excludedCount,
+    downloadUrl: privateDownloadUrl(cloudinary),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +371,8 @@ export function previousDateInIST(now: Date = new Date()): string {
 
 export interface EmployeeExportFile extends ExportFile {
   exportDate: string;
+  employeeId: string | null;
+  cloudinary: CloudinaryRawFile;
 }
 
 function isDailyExportDuplicateError(error: unknown): boolean {
@@ -375,12 +395,19 @@ async function writeEmployeeDailyExport(
 
   const employeeIdOrSlug = usersByEmail.get(email)?.employeeId || String(email).replace(/[^a-z0-9]+/gi, '-');
   const fileName = `${exportDate}_${employeeIdOrSlug}.xlsx`;
-  const dir = dailyExportDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, fileName);
-  await workbook.xlsx.writeFile(filePath);
+  const workbookBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const publicId = `thcm/daily-exports/${exportDate}/${String(employeeIdOrSlug).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+  const cloudinary = await dailyExportStorage.upload(workbookBuffer, publicId);
 
-  return { fileName, filePath, count: stats.includedCount, excludedCount: stats.excludedCount, exportDate };
+  return {
+    fileName,
+    filePath: '',
+    count: stats.includedCount,
+    excludedCount: stats.excludedCount,
+    exportDate,
+    employeeId: usersByEmail.get(email)?.employeeId || null,
+    cloudinary,
+  };
 }
 
 // Same shape as generateDailyExport, but scoped to one explicit calendar day (rather than
@@ -464,13 +491,29 @@ export async function runDailyEmployeeExports(dateInput: string | Date | number)
         continue;
       }
       try {
-        await DailyExport.create({ email, exportDate, orderCount: file.count, fileName: file.fileName });
+        await DailyExport.create({
+          email,
+          exportDate,
+          orderCount: file.count,
+          fileName: file.fileName,
+          employeeId: file.employeeId,
+          storageProvider: 'cloudinary',
+          cloudinaryPublicId: file.cloudinary.publicId,
+          cloudinaryResourceType: file.cloudinary.resourceType,
+          cloudinaryType: file.cloudinary.type,
+          cloudinaryVersion: file.cloudinary.version,
+          cloudinaryBytes: file.cloudinary.bytes,
+          cloudinaryFormat: file.cloudinary.format,
+        });
         created += 1;
       } catch (err) {
         // The pre-check above avoids normal duplicates. The unique (employee_email, export_date)
         // index is still the authority when two cron/script processes overlap. Treat that race
         // as an idempotent skip instead of reporting a failed export.
-        if (!isDailyExportDuplicateError(err)) throw err;
+        if (!isDailyExportDuplicateError(err)) {
+          await dailyExportStorage.destroy(file.cloudinary).catch(() => undefined);
+          throw err;
+        }
         skipped += 1;
       }
     } catch (err) {

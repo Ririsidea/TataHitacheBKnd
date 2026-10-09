@@ -32,7 +32,10 @@ export async function getEvents(req: Request, res: Response, next: NextFunction)
 // everything and filter in the frontend". Optional: status, fromDate, toDate, limit, after, before.
 export async function getOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const parsed = parseOrderListQuery(req.query, { employeeRequired: true });
+    // JWT callers are always scoped to the authenticated employee. The API-key path remains
+    // available for existing internal callers that explicitly provide an employee email.
+    const query = req.user ? { ...req.query, email: req.user.email } : req.query;
+    const parsed = parseOrderListQuery(query, { employeeRequired: true });
     if (parsed.error !== undefined) {
       res.status(400).json({ success: false, message: parsed.error });
       return;
