@@ -11,6 +11,7 @@
     "seed": "tsx src/scripts/seedUsers.ts",
     "seed:employees": "tsx scripts/seedEmployees.ts",
     "seed:employees:clean": "tsx scripts/seedEmployees.ts --clean",
+    "seed:employees:rename-domain": "tsx src/scripts/migrateDummyEmailDomain.ts",
     "test": "tsx --test \"test/**/*.test.ts\""
   },
   "keywords": [],

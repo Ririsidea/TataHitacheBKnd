@@ -52,6 +52,8 @@ interface ColumnRow {
 //                           is never backfilled (most accounts simply have no ticket id).
 //   users.role            - ENUM('admin','employee'); not yet read by any access check
 //                           (see middleware/requireAdmin.ts), kept for future use.
+//   users.is_dummy        - TINYINT(1) NOT NULL DEFAULT 0; true marks seeded test employees (see
+//                           ensureDummyFlag below).
 //   users.token_version   - retired (sessions now end only on JWT expiry; there is no
 //                           server-side revocation); dropped if still present.
 //   users.is_active       - retired (never read or written by any current code); dropped
@@ -148,4 +150,29 @@ export async function ensureUserColumns(): Promise<void> {
     await sequelize.query('ALTER TABLE users ADD UNIQUE INDEX ticket_id (ticket_id)');
     console.log('[schema] added unique index users.ticket_id');
   }
+
+  await ensureDummyFlag();
+}
+
+// The fake domain the first seeded employees used. It is read here ONLY to flag those rows once;
+// after that every script and mail check relies on users.is_dummy, never on the email domain.
+export const LEGACY_SEED_DOMAIN = 'thcm-test.local';
+
+// Adds users.is_dummy and flags the employees the seed script created before the flag existed.
+// Idempotent: the backfill only touches rows still at 0, never an admin, and matches nothing
+// once the domain has been renamed.
+export async function ensureDummyFlag(): Promise<void> {
+  const [cols] = (await sequelize.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'is_dummy'"
+  )) as [{ name: string }[], unknown];
+  if (!cols.length) {
+    await sequelize.query('ALTER TABLE users ADD COLUMN is_dummy TINYINT(1) NOT NULL DEFAULT 0');
+    console.log('[schema] added users.is_dummy');
+  }
+  const [result] = (await sequelize.query(
+    "UPDATE users SET is_dummy = 1 WHERE is_dummy = 0 AND role <> 'admin' AND email LIKE ?",
+    { replacements: [`%@${LEGACY_SEED_DOMAIN}`] }
+  )) as [unknown, unknown];
+  const flagged = (result as { affectedRows?: number }).affectedRows || 0;
+  if (flagged) console.log(`[schema] flagged ${flagged} @${LEGACY_SEED_DOMAIN} users as is_dummy`);
 }

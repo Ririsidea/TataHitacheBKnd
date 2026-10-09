@@ -39,6 +39,11 @@ test-*.ts
 test-*.js
 .nyc_output/
 
+# Dummy / load-test employee seeding - test data only, not real onboarding.
+# src/scripts/seedUsers.ts stays tracked: it seeds the real IRISIDEA employees.
+scripts/seedEmployees.ts
+src/scripts/migrateDummyEmailDomain.ts
+
 # Docs
 docs/
 *.docx
