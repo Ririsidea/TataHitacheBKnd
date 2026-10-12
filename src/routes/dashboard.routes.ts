@@ -1,14 +1,14 @@
 
 import express from 'express';
 import * as controller from '../controllers/dashboard.controller';
-import { requireApiKey } from '../middleware/apiKeyAuth';
+import requireApiKeyOrJwt from '../middleware/requireApiKeyOrJwt';
 
 const router = express.Router();
 
-// Orders API uses API-key authentication.
-router.get('/orders', requireApiKey, controller.getOrders);
+// Existing API-key clients and signed-in JWT employees are both supported.
+router.get('/orders', requireApiKeyOrJwt, controller.getOrders);
 
-// Live order-status feed uses API-key authentication.
-router.get('/order-events', requireApiKey, controller.streamOrderEvents);
+// The same dual authentication applies to the live order-status feed.
+router.get('/order-events', requireApiKeyOrJwt, controller.streamOrderEvents);
 
 export default router;

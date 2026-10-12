@@ -2,6 +2,7 @@ import { sequelize } from '../config/db';
 import { Order, OrderLineItem } from '../models';
 import type { OrderInstance, OrderAttributes, OrderCreationAttributes } from '../models/Order';
 import type { OrderLineItemInstance } from '../models/OrderLineItem';
+import { UniqueConstraintError } from 'sequelize';
 import { shopifyOrderStatusLabel, shopifyDeliveryStatus, shopifyTracking } from '../utils/orderStatus';
 import type { ShopifyFulfillment, ShopifyOrder } from '../types/shopify';
 
@@ -31,6 +32,51 @@ type OrderFields = Partial<
     | 'deliveredAt'
   >
 >;
+
+export interface ShopifyEmployeeFields {
+  name: string | null;
+  email: string;
+  phone: string | null;
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function noteAttribute(shopifyOrder: ShopifyOrder, wantedName: string): string | null {
+  const attribute = (shopifyOrder.note_attributes || []).find(
+    (item) => String(item.name || '').trim().toLowerCase() === wantedName.toLowerCase()
+  );
+  const value = typeof attribute?.value === 'string' ? attribute.value.trim() : '';
+  return value || null;
+}
+
+// MAP employee identity is deliberately read only from note_attributes. Shopify's order/customer
+// email identifies the customer or checkout contact, not the employee who owns the MAP order.
+export function employeeFieldsFromShopifyOrder(shopifyOrder: ShopifyOrder): ShopifyEmployeeFields | null {
+  const email = noteAttribute(shopifyOrder, 'employeeEmail')?.toLowerCase() || '';
+  if (!EMAIL_PATTERN.test(email)) return null;
+  return {
+    name: noteAttribute(shopifyOrder, 'employeeName'),
+    email,
+    phone: noteAttribute(shopifyOrder, 'employeePhone'),
+  };
+}
+
+// Current MAP orders carry the MAP tag and the channel note attribute. Requiring one of those
+// markers plus a valid employeeEmail prevents unrelated Shopify orders from being assigned to a
+// MAP employee during historical recovery.
+export function isMapShopifyOrder(shopifyOrder: ShopifyOrder): boolean {
+  const hasMapTag = String(shopifyOrder.tags || '')
+    .split(',')
+    .some((tag) => tag.trim().toLowerCase() === 'map');
+  const hasMapChannel = noteAttribute(shopifyOrder, 'channel')?.toLowerCase() === 'map';
+  return hasMapTag || hasMapChannel;
+}
+
+function validShopifyDate(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
 
 function toMoney(value: string | number | null | undefined): number | undefined {
   if (value === null || value === undefined) return undefined;
@@ -193,6 +239,58 @@ export async function upsertOrderFromWebhook(
 
     return { orderId, created };
   });
+}
+
+export type MapOrderImportResult =
+  | { outcome: 'inserted'; orderId: number }
+  | { outcome: 'duplicate'; orderId: number }
+  | { outcome: 'not_map' }
+  | { outcome: 'missing_employee' };
+
+function isShopifyOrderIdConflict(err: unknown): boolean {
+  if (!(err instanceof UniqueConstraintError)) return false;
+  if (err.fields && ('shopify_order_id' in err.fields || 'shopifyOrderId' in err.fields)) return true;
+  return err.errors?.some((item) => item.path === 'shopify_order_id' || item.path === 'shopifyOrderId') ?? false;
+}
+
+// Imports only a missing, reliably identified MAP order. Existing rows are intentionally left
+// untouched: webhook/reconcile flows remain responsible for updating them, and a historical
+// recovery must never overwrite a local employee association or a locally captured detail field.
+// The unique shopify_order_id constraint plus the duplicate retry path makes concurrent/rerun
+// backfills idempotent.
+export async function importMapOrderIfMissing(shopifyOrder: ShopifyOrder): Promise<MapOrderImportResult> {
+  if (!isMapShopifyOrder(shopifyOrder)) return { outcome: 'not_map' };
+  const employee = employeeFieldsFromShopifyOrder(shopifyOrder);
+  if (!employee) return { outcome: 'missing_employee' };
+
+  const shopifyOrderId = String(shopifyOrder.id);
+  const fields = {
+    ...orderFieldsFromShopify(shopifyOrder),
+    ...employee,
+    channel: 'MAP',
+    ...(validShopifyDate(shopifyOrder.created_at) ? { createdAt: validShopifyDate(shopifyOrder.created_at) } : {}),
+    ...(validShopifyDate(shopifyOrder.updated_at) ? { updatedAt: validShopifyDate(shopifyOrder.updated_at) } : {}),
+  };
+  const lineItems = lineItemsFromShopify(shopifyOrder);
+
+  try {
+    return await sequelize.transaction(async (transaction) => {
+      const existing = await Order.findOne({ where: { shopifyOrderId }, transaction, lock: transaction.LOCK.UPDATE });
+      if (existing) return { outcome: 'duplicate', orderId: existing.id };
+
+      const row = await Order.create({ shopifyOrderId, ...fields } as OrderCreationAttributes, { transaction });
+      const rows = lineItems.map((li) => ({ ...li, orderId: row.id }));
+      if (rows.length) await OrderLineItem.bulkCreate(rows, { transaction });
+      return { outcome: 'inserted', orderId: row.id };
+    });
+  } catch (err) {
+    // A concurrent backfill can pass the SELECT before the other transaction commits. The DB's
+    // unique index is the final guard; treat that race as the same idempotent duplicate result.
+    if (!isShopifyOrderIdConflict(err)) throw err;
+    const existing = await Order.findOne({ where: { shopifyOrderId } });
+    if (existing) return { outcome: 'duplicate', orderId: existing.id };
+    throw err;
+  }
 }
 
 const sameValue = (a: unknown, b: unknown): boolean => {

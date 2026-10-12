@@ -55,7 +55,9 @@ const HEARTBEAT_MS = 25000;
 // without it every order is streamed (the admin Order Management page).
 // The comment-line heartbeat keeps proxies (ngrok, load balancers) from closing an idle stream.
 export function streamOrderEvents(req: Request, res: Response): void {
-  const rawEmail = req.query.email;
+  // JWT callers are always scoped to their own employee. API-key callers retain the existing
+  // explicit ?email= behavior used by the trusted MAP integration.
+  const rawEmail = req.user?.email ?? req.query.email;
   const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
 
   res.status(200).set({

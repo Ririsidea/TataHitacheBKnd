@@ -55,9 +55,8 @@ app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is healthy', timestamp: new Date().toISOString() });
 });
 app.use('/api/auth', authRoutes);
-// Shopify-related routes authenticate per route with the MAP API key (x-api-key);
-// see map.routes.ts / dashboard.routes.ts. JWT stays on auth/sap/admin
-// (and the dashboard events feed).
+// Shopify-related MAP routes use the MAP API key (x-api-key). Dashboard order reads/streams
+// accept that existing key or a signed-in employee JWT; see dashboard.routes.ts.
 app.use('/api/map', mapRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/sap', authenticate, sapRoutes);

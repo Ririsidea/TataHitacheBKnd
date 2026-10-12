@@ -11,6 +11,7 @@
     "seed": "tsx src/scripts/seedUsers.ts",
     "migrate:drop-is-dummy": "tsx src/migrations/20261010-drop-users-is-dummy.ts",
     "backfill:order-details": "tsx src/scripts/backfillOrderDetails.ts",
+    "backfill:shopify-orders": "tsx src/scripts/backfillShopifyOrders.ts",
     "export:daily": "tsx src/scripts/runDailyExport.ts",
     "test": "tsx --test \"test/**/*.test.ts\""
   },

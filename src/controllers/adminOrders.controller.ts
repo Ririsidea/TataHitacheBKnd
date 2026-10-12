@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import * as orderStatusService from '../services/orderStatus.service';
 import { parseOrderListQuery, listOrders as listOrdersPage } from '../services/orderList.service';
+import { backfillMissingMapOrders } from '../services/shopifyOrderBackfill.service';
 import { warnDeprecatedNames } from '../utils/fieldAliases';
 
 // Admin order management (mounted under /api/admin, so authenticate + requireAdmin already ran).
@@ -36,6 +37,17 @@ export async function markFulfilled(req: Request, res: Response, next: NextFunct
   try {
     const data = await orderStatusService.markOrderFulfilled(req.params.shopifyOrderId);
     res.json({ success: true, message: 'Order marked as fulfilled', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Historical recovery is intentionally an admin-only operation. My Orders remains a fast,
+// employee-scoped MySQL read and never scans the entire Shopify history on a page request.
+export async function backfillShopifyOrders(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const data = await backfillMissingMapOrders();
+    res.json({ success: true, data });
   } catch (err) {
     next(err);
   }

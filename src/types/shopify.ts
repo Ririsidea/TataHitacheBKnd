@@ -79,6 +79,7 @@ export interface ShopifyOrder {
   cancel_reason?: string | null;
   closed_at?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
   fulfillment_status?: string | null;
   financial_status?: string | null;
   total_price?: string | number | null;

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { shopify } from '../../config/env';
 import type {
   CatalogVariantNode,
@@ -480,25 +481,67 @@ export async function restockInventoryForOrder(lineItems: RestockLine[]): Promis
   await adjustInventory(lineItems.map((li) => ({ inventoryItemId: li.inventoryItemId, delta: li.quantity })));
 }
 
+const SHOPIFY_MAX_RETRIES = 4;
+const SHOPIFY_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function retryAfterMs(response: AxiosResponse | undefined, attempt: number): number {
+  const raw = response?.headers?.['retry-after'];
+  const retryAfter = Array.isArray(raw) ? raw[0] : raw;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30_000);
+
+  const date = retryAfter ? Date.parse(String(retryAfter)) : NaN;
+  if (Number.isFinite(date)) return Math.min(Math.max(date - Date.now(), 0), 30_000);
+
+  return Math.min(500 * 2 ** attempt, 8_000);
+}
+
+// Historical order recovery is an operator-triggered operation, so it can wait and retry
+// transient Shopify throttling/server failures without making the employee-facing My Orders
+// request depend on Shopify. The log contains only the fixed operation name and HTTP status.
+async function getWithRetry<T>(url: string, config: AxiosRequestConfig, operation: string): Promise<AxiosResponse<T>> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.get<T>(url, config);
+    } catch (err) {
+      const response = axios.isAxiosError(err) ? err.response : undefined;
+      const status = response?.status;
+      const retryable = status === undefined || SHOPIFY_RETRYABLE_STATUSES.has(status);
+      if (!retryable || attempt >= SHOPIFY_MAX_RETRIES) throw err;
+
+      const delay = retryAfterMs(response, attempt);
+      console.warn(`[shopify] ${operation} retry ${attempt + 1}/${SHOPIFY_MAX_RETRIES} after ${status ?? 'network'} response`);
+      await sleep(delay);
+    }
+  }
+}
+
+function nextLink(headers: AxiosResponse['headers']): string | null {
+  const raw = headers?.link;
+  if (!raw) return null;
+  const header = Array.isArray(raw) ? raw.join(',') : String(raw);
+  const match = /<([^>]+)>\s*;\s*rel\s*=\s*["']next["']/i.exec(header);
+  return match?.[1] || null;
+}
+
 // Fetch Shopify orders page by page.
 // Use this for recovering orders that are missing from the local database.
 export async function listAllShopifyOrders(): Promise<ShopifyOrder[]> {
   const orders: ShopifyOrder[] = [];
-  let sinceId: string | undefined;
+  let url = '/orders.json';
+  let params: Record<string, unknown> | undefined = {
+    status: 'any',
+    limit: 250,
+    order: 'created_at desc',
+  };
 
-  while (true) {
-    const params: Record<string, unknown> = {
-      status: 'any',
-      limit: 250,
-      order: 'created_at desc',
-    };
-
-    if (sinceId) {
-      params.since_id = sinceId;
-    }
-
-    const { data } = await client.get('/orders.json', { params });
-    const batch = data.orders as ShopifyOrder[];
+  while (url) {
+    const response: AxiosResponse<{ orders?: ShopifyOrder[] }> = await getWithRetry<{ orders?: ShopifyOrder[] }>(
+      url,
+      { params },
+      'orders backfill pagination'
+    );
+    const batch: ShopifyOrder[] = Array.isArray(response.data.orders) ? response.data.orders : [];
 
     if (!batch.length) {
       break;
@@ -510,7 +553,17 @@ export async function listAllShopifyOrders(): Promise<ShopifyOrder[]> {
       break;
     }
 
-    sinceId = String(batch[batch.length - 1].id);
+    // Shopify's REST response normally carries a cursor Link header. The since_id fallback
+    // keeps this compatible with stores/API versions that omit Link while still avoiding a
+    // repeated first page.
+    const cursor = nextLink(response.headers);
+    if (cursor) {
+      url = cursor;
+      params = undefined;
+    } else {
+      url = '/orders.json';
+      params = { status: 'any', limit: 250, order: 'created_at desc', since_id: String(batch[batch.length - 1]!.id) };
+    }
   }
 
   return orders;
