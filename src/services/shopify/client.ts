@@ -479,3 +479,39 @@ async function adjustInventory(adjustments: InventoryAdjustment[]): Promise<void
 export async function restockInventoryForOrder(lineItems: RestockLine[]): Promise<void> {
   await adjustInventory(lineItems.map((li) => ({ inventoryItemId: li.inventoryItemId, delta: li.quantity })));
 }
+
+// Fetch Shopify orders page by page.
+// Use this for recovering orders that are missing from the local database.
+export async function listAllShopifyOrders(): Promise<ShopifyOrder[]> {
+  const orders: ShopifyOrder[] = [];
+  let sinceId: string | undefined;
+
+  while (true) {
+    const params: Record<string, unknown> = {
+      status: 'any',
+      limit: 250,
+      order: 'created_at desc',
+    };
+
+    if (sinceId) {
+      params.since_id = sinceId;
+    }
+
+    const { data } = await client.get('/orders.json', { params });
+    const batch = data.orders as ShopifyOrder[];
+
+    if (!batch.length) {
+      break;
+    }
+
+    orders.push(...batch);
+
+    if (batch.length < 250) {
+      break;
+    }
+
+    sinceId = String(batch[batch.length - 1].id);
+  }
+
+  return orders;
+}

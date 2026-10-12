@@ -33,9 +33,6 @@ export interface UserAttributes {
   // true until the employee sets their own password (after account creation or an
   // admin-assigned password); the frontend uses this to decide whether to prompt a change.
   mustResetPassword: boolean;
-  // true only for the fake employees made by `npm run seed:employees`. The seed / clean / rename-domain
-  // scripts and any mail code use this flag - never the email domain - to tell dummy users from real ones.
-  isDummy: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,12 +94,6 @@ const User = sequelize.define<UserInstance>(
       allowNull: false,
       defaultValue: true,
       field: 'must_reset_password',
-    },
-    isDummy: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false,
-      field: 'is_dummy',
     },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },
     updatedAt: { type: DataTypes.DATE, field: 'updated_at' },
