@@ -196,6 +196,8 @@ export async function ensureOrderDetailColumns(): Promise<void> {
     ['cancelled_at', 'DATETIME NULL'],
     ['shipped_at', 'DATETIME NULL'],
     ['delivered_at', 'DATETIME NULL'],
+    ['employee_confirmation_notified_at', 'DATETIME NULL'],
+    ['payroll_notified_at', 'DATETIME NULL'],
     // Backend-only, see the function comment above - never a model attribute.
     ['raw_payload', 'LONGTEXT NULL'],
   ];

@@ -57,6 +57,8 @@ export interface OrderAttributes {
   cancelledAt: Date | null;
   shippedAt: Date | null;
   deliveredAt: Date | null;
+  employeeConfirmationNotifiedAt: Date | null;
+  payrollNotifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -116,6 +118,8 @@ const Order = sequelize.define<OrderInstance>(
     cancelledAt: { type: DataTypes.DATE, field: 'cancelled_at' },
     shippedAt: { type: DataTypes.DATE, field: 'shipped_at' },
     deliveredAt: { type: DataTypes.DATE, field: 'delivered_at' },
+    employeeConfirmationNotifiedAt: { type: DataTypes.DATE, field: 'employee_confirmation_notified_at' },
+    payrollNotifiedAt: { type: DataTypes.DATE, field: 'payroll_notified_at' },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },
     updatedAt: { type: DataTypes.DATE, field: 'updated_at' },
   },

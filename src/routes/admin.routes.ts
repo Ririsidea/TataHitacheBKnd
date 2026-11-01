@@ -13,6 +13,7 @@ router.delete('/employees/:id', controller.deleteEmployee);
 // Order Management: all orders, and the pending -> paid -> fulfilled status actions.
 router.get('/orders', ordersController.listOrders);
 router.post('/orders/:shopifyOrderId/mark-paid', ordersController.markPaid);
+router.post('/orders/:shopifyOrderId/approve', ordersController.approve);
 router.post('/orders/:shopifyOrderId/mark-fulfilled', ordersController.markFulfilled);
 router.post('/orders/backfill-shopify', ordersController.backfillShopifyOrders);
 // Today's orders, live from the DB (not a file).

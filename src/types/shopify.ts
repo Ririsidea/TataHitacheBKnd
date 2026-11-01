@@ -89,6 +89,7 @@ export interface ShopifyOrder {
   total_tax?: string | number | null;
   // webhook payload only - see the file-level note above.
   email?: string | null;
+  contact_email?: string | null;
   phone?: string | null;
   customer?: ShopifyCustomer | null;
   shipping_address?: ShopifyAddress | null;

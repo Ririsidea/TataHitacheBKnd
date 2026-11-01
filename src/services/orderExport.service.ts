@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import { Op } from 'sequelize';
 import ExcelJS from 'exceljs';
-import { Order, OrderLineItem, User, DailyExport } from '../models';
+import { Order, OrderLineItem, User, DailyExport, AdminDailyExport } from '../models';
 import type { OrderInstance } from '../models/Order';
 import type { OrderLineItemInstance } from '../models/OrderLineItem';
 import type { UserInstance } from '../models/User';
@@ -440,6 +440,38 @@ export interface DailyRunResult {
   failed: number;
   excludedOrders: number;
   excludedByReason: Omit<ExcludedOrderSummary, 'total'>;
+}
+
+// Consolidated admin report: intentionally queries the complete order table, not the admin
+// email and not the users table. This includes admin orders and Shopify-synced rows whose
+// employee account may no longer exist. AdminDailyExport's unique date key makes retries safe.
+export async function runDailyAdminExport(dateInput: string | Date | number): Promise<{ exportDate: string; created: boolean; orderCount: number }> {
+  const { start, end } = dayBounds(dateInput);
+  const exportDate = toDateOnly(start);
+  const existing = await AdminDailyExport.findOne({ where: { exportDate } });
+  if (existing) return { exportDate, created: false, orderCount: existing.orderCount };
+
+  const orders = await Order.findAll({
+    where: { createdAt: { [Op.gte]: start, [Op.lte]: end } },
+    include: [{ model: OrderLineItem, as: 'lineItems' }],
+    order: [['createdAt', 'ASC']],
+  });
+  const usersByEmail = await buildUsersByEmail(orders.map((order) => order.email));
+  const workbook = new ExcelJS.Workbook();
+  const stats = buildOrdersWorksheet(workbook, orders, usersByEmail, formatDateOnly(exportDate));
+  const fileName = `${exportDate}_all-orders.xlsx`;
+  await fs.promises.mkdir(allOrdersExportDir(), { recursive: true });
+  await workbook.xlsx.writeFile(path.join(allOrdersExportDir(), fileName));
+  try {
+    await AdminDailyExport.create({ exportDate, orderCount: stats.includedCount, fileName });
+  } catch (err) {
+    if (!isDailyExportDuplicateError(err)) throw err;
+    // Another cron worker owns this date. Both workers write the same deterministic workbook;
+    // never delete the shared path owned by the winner.
+    const winner = await AdminDailyExport.findOne({ where: { exportDate } });
+    return { exportDate, created: false, orderCount: winner?.orderCount || 0 };
+  }
+  return { exportDate, created: true, orderCount: stats.includedCount };
 }
 
 // Runs once daily (see src/jobs/employeeDailyExportCron.ts). The employee list and all orders for

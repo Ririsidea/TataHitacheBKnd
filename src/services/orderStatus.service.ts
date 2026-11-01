@@ -160,6 +160,15 @@ export async function markOrderPaid(shopifyOrderId: unknown): Promise<OrderView>
   });
 }
 
+// Approval is the admin-facing name for the existing Shopify payment transition. It is
+// deliberately idempotent: a repeated click returns the already-approved order and does not
+// call Shopify again.
+export async function approveOrder(shopifyOrderId: unknown): Promise<OrderView> {
+  const order = await loadByShopifyId(shopifyOrderId);
+  if (lower(order.financialStatus) === 'paid') return toOrderView(order.id);
+  return markOrderPaid(shopifyOrderId);
+}
+
 // Paid -> Fulfilled. Creates the fulfillment in Shopify; the order is locked afterwards.
 // An order that is only partly fulfilled (status "fulfilled", not locked) can be completed.
 export async function markOrderFulfilled(shopifyOrderId: unknown): Promise<OrderView> {

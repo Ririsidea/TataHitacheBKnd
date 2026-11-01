@@ -1,6 +1,6 @@
 
 import cron from 'node-cron';
-import { runDailyEmployeeExports } from '../services/orderExport.service';
+import { runDailyAdminExport, runDailyEmployeeExports } from '../services/orderExport.service';
 import { errorMessage } from '../utils/errors';
 
 function currentDateInIST(): string {
@@ -20,6 +20,7 @@ export default function scheduleEmployeeDailyExport(): void {
 
       try {
         const result = await runDailyEmployeeExports(exportDate);
+        const adminResult = await runDailyAdminExport(exportDate);
 
         console.log(
           `[Employee Daily Export] ${result.exportDate}: ` +
@@ -29,6 +30,10 @@ export default function scheduleEmployeeDailyExport(): void {
             `${result.excludedOrders} excluded, ` +
             `${result.failed} failed ` +
             `(of ${result.totalEmployees} employees)`
+        );
+        console.log(
+          `[Admin Daily Export] ${adminResult.exportDate}: ` +
+            `${adminResult.created ? 'created' : 'already existed'}, ${adminResult.orderCount} orders`
         );
       } catch (err: unknown) {
         console.error(

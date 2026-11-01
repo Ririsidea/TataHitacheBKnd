@@ -33,6 +33,15 @@ export async function markPaid(req: Request, res: Response, next: NextFunction):
   }
 }
 
+export async function approve(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const data = await orderStatusService.approveOrder(req.params.shopifyOrderId);
+    res.json({ success: true, message: 'Order approved', data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function markFulfilled(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const data = await orderStatusService.markOrderFulfilled(req.params.shopifyOrderId);

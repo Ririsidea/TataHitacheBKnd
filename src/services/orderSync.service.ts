@@ -49,15 +49,37 @@ function noteAttribute(shopifyOrder: ShopifyOrder, wantedName: string): string |
   return value || null;
 }
 
+function firstNoteAttribute(shopifyOrder: ShopifyOrder, names: string[]): string | null {
+  for (const name of names) {
+    const value = noteAttribute(shopifyOrder, name);
+    if (value) return value;
+  }
+  return null;
+}
+
+function hasEmployeeIdentifiers(shopifyOrder: ShopifyOrder): boolean {
+  return Boolean(noteAttribute(shopifyOrder, 'employeeId') || noteAttribute(shopifyOrder, 'ticketId'));
+}
+
+function hasLegacyEmployeeAttributes(shopifyOrder: ShopifyOrder): boolean {
+  return Boolean(noteAttribute(shopifyOrder, 'email') && hasEmployeeIdentifiers(shopifyOrder));
+}
+
 // MAP employee identity is deliberately read only from note_attributes. Shopify's order/customer
 // email identifies the customer or checkout contact, not the employee who owns the MAP order.
 export function employeeFieldsFromShopifyOrder(shopifyOrder: ShopifyOrder): ShopifyEmployeeFields | null {
-  const email = noteAttribute(shopifyOrder, 'employeeEmail')?.toLowerCase() || '';
+  const noteEmail = firstNoteAttribute(shopifyOrder, ['employeeEmail', ...(hasLegacyEmployeeAttributes(shopifyOrder) ? ['email'] : [])]);
+  // A live Shopify email is normally the customer's contact. Only use it as a fallback when the
+  // same order also carries employeeId/ticketId metadata, which is the legacy MAP shape.
+  const markedOrderEmail = hasEmployeeIdentifiers(shopifyOrder) && isMapShopifyOrder(shopifyOrder)
+    ? (shopifyOrder.email || shopifyOrder.contact_email)
+    : null;
+  const email = (noteEmail || markedOrderEmail || '').trim().toLowerCase();
   if (!EMAIL_PATTERN.test(email)) return null;
   return {
-    name: noteAttribute(shopifyOrder, 'employeeName'),
+    name: firstNoteAttribute(shopifyOrder, ['employeeName', ...(hasLegacyEmployeeAttributes(shopifyOrder) ? ['name'] : [])]),
     email,
-    phone: noteAttribute(shopifyOrder, 'employeePhone'),
+    phone: firstNoteAttribute(shopifyOrder, ['employeePhone', ...(hasLegacyEmployeeAttributes(shopifyOrder) ? ['phone'] : [])]),
   };
 }
 
@@ -69,7 +91,7 @@ export function isMapShopifyOrder(shopifyOrder: ShopifyOrder): boolean {
     .split(',')
     .some((tag) => tag.trim().toLowerCase() === 'map');
   const hasMapChannel = noteAttribute(shopifyOrder, 'channel')?.toLowerCase() === 'map';
-  return hasMapTag || hasMapChannel;
+  return hasMapTag || hasMapChannel || Boolean(noteAttribute(shopifyOrder, 'employeeEmail')) || hasLegacyEmployeeAttributes(shopifyOrder);
 }
 
 function validShopifyDate(value: string | null | undefined): Date | undefined {
@@ -211,7 +233,12 @@ export async function upsertOrderFromWebhook(
   extraFields: Record<string, unknown> = {}
 ): Promise<{ orderId: number; created: boolean }> {
   const shopifyOrderId = String(shopifyOrder.id);
-  const fields = { ...orderFieldsFromShopify(shopifyOrder), ...extraFields };
+  // Webhook-created rows can arrive before the MAP create-order request, so employee identity
+  // must be recovered from the Shopify note attributes here as well. Never fall back to the
+  // Shopify customer/order email: that is a checkout contact, not the employee owner.
+  const employee = employeeFieldsFromShopifyOrder(shopifyOrder);
+  const employeeOrderFields = employee && isMapShopifyOrder(shopifyOrder) ? { ...employee, channel: 'MAP' } : {};
+  const fields = { ...orderFieldsFromShopify(shopifyOrder), ...employeeOrderFields, ...extraFields };
   const lineItems = lineItemsFromShopify(shopifyOrder);
 
   return sequelize.transaction(async (transaction) => {
@@ -244,6 +271,7 @@ export async function upsertOrderFromWebhook(
 export type MapOrderImportResult =
   | { outcome: 'inserted'; orderId: number }
   | { outcome: 'duplicate'; orderId: number }
+  | { outcome: 'repaired'; orderId: number }
   | { outcome: 'not_map' }
   | { outcome: 'missing_employee' };
 
@@ -276,7 +304,29 @@ export async function importMapOrderIfMissing(shopifyOrder: ShopifyOrder): Promi
   try {
     return await sequelize.transaction(async (transaction) => {
       const existing = await Order.findOne({ where: { shopifyOrderId }, transaction, lock: transaction.LOCK.UPDATE });
-      if (existing) return { outcome: 'duplicate', orderId: existing.id };
+      if (existing) {
+        // A webhook may already have created the order row before employee metadata was
+        // available to the local insert. Repair only missing identity fields; do not overwrite
+        // an existing employee association or any status/detail fields.
+        const updates: Record<string, unknown> = {};
+        const existingEmail = typeof existing.email === 'string' ? existing.email.trim().toLowerCase() : '';
+        if (!existingEmail) {
+          updates.name = employee.name;
+          updates.email = employee.email;
+          updates.phone = employee.phone;
+        } else if (existingEmail === employee.email) {
+          if (!existing.name && employee.name) updates.name = employee.name;
+          if (!existing.phone && employee.phone) updates.phone = employee.phone;
+        }
+        if (existingEmail === '' || existingEmail === employee.email) {
+          if (!existing.channel) updates.channel = 'MAP';
+        }
+        if (Object.keys(updates).length) {
+          await existing.update(updates, { transaction });
+          return { outcome: 'repaired', orderId: existing.id };
+        }
+        return { outcome: 'duplicate', orderId: existing.id };
+      }
 
       const row = await Order.create({ shopifyOrderId, ...fields } as OrderCreationAttributes, { transaction });
       const rows = lineItems.map((li) => ({ ...li, orderId: row.id }));

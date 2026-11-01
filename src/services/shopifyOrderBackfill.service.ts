@@ -11,6 +11,7 @@ export interface ShopifyMapBackfillResult {
   mapOrders: number;
   eligibleOrders: number;
   inserted: number;
+  repaired: number;
   skippedDuplicates: number;
   skippedNotMap: number;
   skippedMissingEmployee: number;
@@ -33,6 +34,7 @@ async function runBackfill(): Promise<ShopifyMapBackfillResult> {
     mapOrders: 0,
     eligibleOrders: 0,
     inserted: 0,
+    repaired: 0,
     skippedDuplicates: 0,
     skippedNotMap: 0,
     skippedMissingEmployee: 0,
@@ -56,6 +58,7 @@ async function runBackfill(): Promise<ShopifyMapBackfillResult> {
     try {
       const imported = await importMapOrderIfMissing(shopifyOrder);
       if (imported.outcome === 'inserted') result.inserted += 1;
+      else if (imported.outcome === 'repaired') result.repaired += 1;
       else if (imported.outcome === 'duplicate') result.skippedDuplicates += 1;
     } catch (err) {
       result.failed += 1;
@@ -67,7 +70,7 @@ async function runBackfill(): Promise<ShopifyMapBackfillResult> {
 
   console.log(
     `[shopify-backfill] scanned ${result.scannedShopifyOrders}, inserted ${result.inserted}, `
-      + `duplicates ${result.skippedDuplicates}, failed ${result.failed}`
+      + `repaired ${result.repaired}, duplicates ${result.skippedDuplicates}, failed ${result.failed}`
   );
   return result;
 }

@@ -15,6 +15,7 @@ import { httpError, errorMessage } from '../utils/errors';
 import { validateIndianAddress, lookupPincode } from '../services/pincode.service';
 import { readRenamed } from '../utils/fieldAliases';
 import type { SkuVariantNode } from '../types/shopify';
+import { notifyOrderPlaced } from '../services/orderNotification.service';
 
 const MAX_KEY_LENGTH = 100;
 
@@ -374,6 +375,12 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     }
 
     const createdOrder = await Order.findByPk(order.id, { include: includeLineItems });
+
+    if (createdOrder) {
+      await notifyOrderPlaced(createdOrder).catch((notificationError: unknown) => {
+        console.error('[order-notification] failed:', errorMessage(notificationError));
+      });
+    }
 
     res.status(201).json({ success: true, data: createdOrder });
   } catch (err) {
