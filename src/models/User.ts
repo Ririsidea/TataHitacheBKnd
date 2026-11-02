@@ -3,9 +3,8 @@ import { sequelize } from '../config/db';
 import { EMPLOYEE_ID_PATTERN } from '../utils/employeeId';
 import { TICKET_ID_PATTERN } from '../utils/ticketId';
 
-// The two roles an account can have. Not used to gate admin access today (see
-// middleware/requireAdmin.ts, which compares the signed-in email against ADMIN_EMAIL) -
-// this is stored for future use and to match the live database.
+// The two roles an account can have. Authentication and requireAdmin use this
+// value for the signed-in user's authorization.
 export type UserRole = 'admin' | 'employee';
 
 export interface UserAttributes {
@@ -28,7 +27,7 @@ export interface UserAttributes {
   phone: string | null;
   // bcrypt hash only - a plain-text password is never stored.
   passwordHash: string;
-  // 'admin' or 'employee'. Stored for completeness; not yet read by any access check.
+  // 'admin' or 'employee'. Used for authentication and admin-route authorization.
   role: UserRole;
   // true until the employee sets their own password (after account creation or an
   // admin-assigned password); the frontend uses this to decide whether to prompt a change.

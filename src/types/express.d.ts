@@ -5,7 +5,7 @@ declare global {
       /** Set by middleware/requestId - also the X-Request-Id response header and the `requestId` of every error. */
       id: string;
       /** Set by middleware/authenticate from a valid JWT. */
-      user?: { userId: number; email: string };
+      user?: { userId: number; email: string; role: 'admin' | 'employee' };
       /** Set by middleware/apiKeyAuth once the x-api-key matched. */
       auth?: { type: 'apiKey' };
       /** Set by middleware/verifyShopifyWebhook: the verified, parsed webhook body. */

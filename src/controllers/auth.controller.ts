@@ -4,7 +4,7 @@ import { Op } from 'sequelize';
 import type { NextFunction, Request, Response } from 'express';
 import { User } from '../models';
 import type { UserInstance } from '../models/User';
-import { jwtSecret, admin } from '../config/env';
+import { jwtSecret } from '../config/env';
 import { ConfigError } from '../utils/errors';
 import { validatePassword } from '../utils/passwordPolicy';
 import { isValidEmployeeId } from '../utils/employeeId';
@@ -27,6 +27,7 @@ interface PublicUser {
   ticketId: string | null;
   name: string | null;
   phone: string | null;
+  role: 'admin' | 'employee';
   mustResetPassword: boolean;
   isAdmin: boolean;
 }
@@ -38,9 +39,10 @@ function toPublicUser(user: UserInstance): PublicUser {
     ticketId: user.ticketId,
     name: user.name,
     phone: user.phone,
+    role: user.role,
     mustResetPassword: user.mustResetPassword,
     // Tells the frontend to show the add/delete-employee option for this account.
-    isAdmin: user.email === admin.email,
+    isAdmin: user.role === 'admin',
   };
 }
 

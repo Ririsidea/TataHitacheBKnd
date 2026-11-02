@@ -150,6 +150,10 @@ Address column, numeric line totals, and a final bold `Total` row. Use
 
 New, under `/api/admin` (so `authenticate` + `requireAdmin` already ran - see `app.ts`):
 
+- `POST /api/admin/employees` - creates an employee account. The JSON body accepts the
+  optional `role` field (`"employee"` or `"admin"`); it defaults to `"employee"`. Any other
+  value returns HTTP 400. The created employee response includes the assigned `role`.
+
 - `GET /api/admin/orders/today` - today's orders straight from the DB (rows, count, total value).
 - `GET /api/admin/daily-exports?from=&to=&limit=&after=&before=` - historical consolidated export
   records only; no new consolidated files or records are generated. Uses this app's existing cursor pagination (`after`/`before`), not `?page=` -

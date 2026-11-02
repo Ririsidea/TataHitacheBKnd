@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import type { NextFunction, Request, Response } from 'express';
-import { jwtSecret } from '../config/env';
+import { jwtSecret, admin } from '../config/env';
 import { ConfigError } from '../utils/errors';
 import { User } from '../models';
 import type { JwtPayload } from '../controllers/auth.controller';
@@ -30,7 +30,12 @@ export default async function authenticate(req: Request, res: Response, next: Ne
       return;
     }
 
-    req.user = { userId: decoded.userId, email: decoded.email };
+    // Role is read from the current database row on every request, so changing an
+    // account's role takes effect without waiting for an existing JWT to expire.
+    // The email fallback only supports legacy test/seed rows that predate users.role;
+    // persisted users always have the non-null role column.
+    const role = user.role ?? (user.email === admin.email ? 'admin' : 'employee');
+    req.user = { userId: user.id, email: user.email, role };
     next();
   } catch {
     res.status(401).json({ success: false, message: 'Invalid or expired token' });

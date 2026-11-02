@@ -10,6 +10,7 @@ import { admin } from '../config/env';
 import { validatePassword } from '../utils/passwordPolicy';
 import { isValidEmployeeId } from '../utils/employeeId';
 import { isValidTicketId } from '../utils/ticketId';
+import type { UserRole } from '../models/User';
 
 const SALT_ROUNDS = 12;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,6 +22,7 @@ interface PublicEmployee {
   ticketId: string | null;
   name: string | null;
   phone: string | null;
+  role: UserRole;
   mustResetPassword: boolean;
   isAdmin: boolean;
   createdAt: Date;
@@ -34,6 +36,7 @@ function toPublicEmployee(user: UserInstance): PublicEmployee {
     ticketId: user.ticketId,
     name: user.name,
     phone: user.phone,
+    role: user.role,
     mustResetPassword: user.mustResetPassword,
     isAdmin: user.email === admin.email,
     createdAt: user.createdAt,
@@ -104,13 +107,14 @@ export async function listEmployees(req: Request, res: Response, next: NextFunct
 
 export async function addEmployee(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { email, employeeId, ticketId, name, phone, password } = (req.body ?? {}) as {
+    const { email, employeeId, ticketId, name, phone, password, role } = (req.body ?? {}) as {
       email?: unknown;
       employeeId?: unknown;
       ticketId?: unknown;
       name?: unknown;
       phone?: unknown;
       password?: unknown;
+      role?: unknown;
     };
     if (!email) {
       res.status(400).json({ success: false, message: 'Email is required' });
@@ -119,6 +123,11 @@ export async function addEmployee(req: Request, res: Response, next: NextFunctio
     const trimmedEmployeeId = typeof employeeId === 'string' ? employeeId.trim() : '';
     if (!isValidEmployeeId(trimmedEmployeeId)) {
       res.status(400).json({ success: false, message: 'employeeId must be exactly 5 digits' });
+      return;
+    }
+    const assignedRole: UserRole = role === undefined ? 'employee' : role as UserRole;
+    if (assignedRole !== 'admin' && assignedRole !== 'employee') {
+      res.status(400).json({ success: false, message: 'role must be admin or employee' });
       return;
     }
     // Optional: absent or blank means no ticket id at all; when given, it must be 5 digits,
@@ -166,6 +175,7 @@ export async function addEmployee(req: Request, res: Response, next: NextFunctio
         name: name ? String(name) : null,
         phone: phone ? String(phone) : null,
         passwordHash,
+        role: assignedRole,
         mustResetPassword: true,
       });
     } catch (err) {

@@ -1,4 +1,5 @@
 import { sequelize } from './db';
+import { admin } from './env';
 
 // Additive, idempotent schema upgrade run at startup (the project has no migration tool;
 // schema.sql is the source of truth for fresh installs, this brings an existing database
@@ -50,8 +51,8 @@ interface ColumnRow {
 //   users.ticket_id       - optional 5-digit login id, same column type as employee_id so
 //                           a leading zero survives; unlike employee_id, stays nullable and
 //                           is never backfilled (most accounts simply have no ticket id).
-//   users.role            - ENUM('admin','employee'); not yet read by any access check
-//                           (see middleware/requireAdmin.ts), kept for future use.
+//   users.role            - ENUM('admin','employee'); used by authentication and
+//                           middleware/requireAdmin.ts for authorization.
 //   users.token_version   - retired (sessions now end only on JWT expiry; there is no
 //                           server-side revocation); dropped if still present.
 //   users.is_active       - retired (never read or written by any current code); dropped
@@ -67,6 +68,12 @@ export async function ensureUserColumns(): Promise<void> {
   if (!columns.has('role')) {
     await sequelize.query("ALTER TABLE users ADD COLUMN role ENUM('admin','employee') NOT NULL DEFAULT 'employee'");
     console.log("[schema] added users.role");
+  }
+
+  // The configured bootstrap admin predates role-based authorization in some
+  // installations. Keep that account usable after the authorization switch.
+  if (admin.email) {
+    await sequelize.query('UPDATE users SET role = \'admin\' WHERE email = ?', { replacements: [admin.email] });
   }
 
   // token_version: no longer read anywhere (middleware/authenticate.ts only checks that
