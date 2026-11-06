@@ -38,7 +38,7 @@ function toPublicEmployee(user: UserInstance): PublicEmployee {
     phone: user.phone,
     role: user.role,
     mustResetPassword: user.mustResetPassword,
-    isAdmin: user.email === admin.email,
+    isAdmin: user.role === 'admin' || user.email === admin.email,
     createdAt: user.createdAt,
   };
 }

@@ -49,9 +49,8 @@ export async function listAdminDailyExports(req: Request, res: Response, next: N
       offset,
     });
 
-    // Current cron jobs create one authenticated employee export per day. Older deployments
-    // may also have consolidated AdminDailyExport files; keep those records authoritative when
-    // present, and expose the current per-employee files to authorized admins otherwise.
+    // New cron jobs create one consolidated AdminDailyExport per day. Older deployments may
+    // still have per-employee DailyExport rows, so keep the historical fallback readable.
     const { rows, count } = adminResult.count > 0
       ? adminResult
       : await DailyExport.findAndCountAll({
@@ -86,10 +85,8 @@ type AdminExportRecord =
   | { source: 'employee'; record: InstanceType<typeof DailyExport> };
 
 async function readAdminExportBuffer(loaded: AdminExportRecord): Promise<Buffer> {
-  if (loaded.source === 'employee') {
-    const cloudinaryFile = cloudinaryFileFromRecord(loaded.record);
-    if (cloudinaryFile) return downloadPrivateRawFile(cloudinaryFile);
-  }
+  const cloudinaryFile = cloudinaryFileFromRecord(loaded.record);
+  if (cloudinaryFile) return downloadPrivateRawFile(cloudinaryFile);
   return fs.promises.readFile(path.join(loaded.source === 'consolidated' ? allOrdersExportDir() : dailyExportDir(), loaded.record.fileName));
 }
 
@@ -160,8 +157,7 @@ export async function downloadAdminDailyExport(req: Request, res: Response, next
 }
 
 // Today's orders, live from the DB (not a file) - rows, a count, and the total value, for an
-// admin dashboard tile. "Today" uses the server's local calendar day, same caveat as the export
-// cron (see orderExport.service.ts dayBounds's comment on IST vs server TZ).
+// admin dashboard tile. "Today" uses the Asia/Kolkata calendar day, matching the export cron.
 export async function getTodayOrders(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { start, end } = dayBounds(new Date());

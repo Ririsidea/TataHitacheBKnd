@@ -98,8 +98,10 @@ Quantity and Total Price (`Total | | | | | | | 3 | ₹897.00 | | |` - everything
 **Cancelled orders are excluded everywhere this builder is used**: `cancelledAt` set, `status`
 `cancelled`, or `financialStatus` `voided`/`refunded` (`isExcludedOrder`, exported for reuse by
 `runDailyExport.ts`'s `--dry-run`). The employee-wise daily export writes nothing - no file or
-`DailyExport` row - for an employee/day with zero qualifying orders. Consolidated generation is
-disabled; existing historical consolidated records/files are retained for preview/download. The
+`DailyExport` row - for an employee/day with zero qualifying orders. The admin cron now creates
+one consolidated workbook for the whole store only when that IST day has at least one qualifying
+order; empty days create neither a file nor a record. Existing historical consolidated records/files
+are retained for preview/download. The
 on-demand "Export My Orders" button (`generateDailyExport`, all-time, not
 day-scoped) still always writes a file, since a user-initiated download expects an immediate
 result; it uses the same 12 columns and exclusion rule, but keeps its original
@@ -107,16 +109,17 @@ result; it uses the same 12 columns and exclusion rule, but keeps its original
 `<exportDate>_<employeeId>` convention, which was asked for the daily cron/admin sheets specifically.
 
 File names: per-employee `<exportDate>_<employeeId>.xlsx` (falls back to an email slug on the
-rare order whose email matches no `users` row). New cron workbooks are uploaded directly to
-Cloudinary as private raw files and are not permanently written to `exports/daily` or
-`exports/daily/all`. Existing local historical files remain readable.
+rare order whose email matches no `users` row). Employee/on-demand workbooks and new admin
+consolidated workbooks are uploaded directly to Cloudinary as private raw files and are not
+permanently written to `exports/daily` or `exports/daily/all`. Existing local historical files
+remain readable.
 
 Cloudinary export storage requires `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and
 `CLOUDINARY_API_SECRET`. The database stores the Cloudinary public ID, raw/private resource
 metadata, filename, export date, employee ID, and employee email. Employee view/download routes
 verify ownership before proxying the private file; admin routes retain their existing permissions.
-If an upload or database write fails, the employee export is reported as failed and no successful
-`DailyExport` record is created. The unique employee/date index handles overlapping cron runs.
+If an upload or database write fails, no successful export record is left behind. The unique
+employee/date and admin-date indexes handle overlapping runs.
 
 **Columns always blank today, and why**: Address for any order placed before Protected Customer
 Data access is granted *and* whose checkout never collected it (see the section above); Name
@@ -128,18 +131,18 @@ original csv reader. They are not retroactively rewritten to the new 12-column f
 
 ### Cron and manual trigger
 
-The cron (`src/jobs/employeeDailyExportCron.ts`) runs at `5 0 * * *` with node-cron's own
+The admin cron (`src/jobs/employeeDailyExportCron.ts`) runs at `5 0 * * *` with node-cron's own
 `timezone: 'Asia/Kolkata'` option, so it fires at 00:05 IST regardless of the server's own
-timezone. The previous date and the database range boundaries are also calculated explicitly in
-IST, so the target is always the previous completed IST calendar day.
+timezone. It exports the previous completed IST calendar day as one consolidated workbook. On
+startup and on each scheduled run it processes only the previous completed IST calendar day; days
+with no qualifying orders are logged as `no orders` and create no file or record.
 
-`npm run export:daily -- [--date=YYYY-MM-DD] [--force] [--dry-run]` runs the exact same logic
-on demand, for one explicit day (defaults to yesterday):
-- `--force` deletes any existing record (and its file) for that date first, then regenerates -
-  a normal run always skips a date it already has.
-- `--dry-run` computes and prints what would happen - how many files would be created, how many
-  employees already have a record, how many have no qualifying order, and excluded counts by
-  cancelled/voided/refunded reason - without writing anything.
+`npm run export:daily -- [--date=YYYY-MM-DD] [--force] [--dry-run]` runs the same admin
+consolidated logic on demand, for one explicit day (defaults to yesterday):
+- `--force` deletes the existing admin record and its Cloudinary/local file for that date first,
+  then regenerates; a normal run skips a date it already has.
+- `--dry-run` prints qualifying order count, excluded counts by cancelled/voided/refunded reason,
+  and whether one consolidated file would be created, without writing anything.
 
 The workbook contract is exactly 12 columns, one row per line item, with order number (never the
 database primary key) in `Id`, IST date/timestamp formatting, text-preserved PINs in the wrapped
@@ -148,6 +151,18 @@ Address column, numeric line totals, and a final bold `Total` row. Use
 
 ## Routes
 
+### Trending products
+
+`POST /api/trending-products` is available with the existing `x-api-key` authentication. It
+queries Shopify Admin GraphQL orders (without using the database) and returns products ranked by
+net items sold. The JSON body is optional: `{ "days": 30, "limit": 10 }`, with `days` from 1 to 60
+and `limit` from 1 to 50. For calendar analytics send `period` as `today`, `yesterday`,
+`this_week`, `previous_week`, `this_month`, `previous_month`, `this_year`, `previous_year`, or
+`custom`; `custom` also requires `startDate` and `endDate` in `YYYY-MM-DD` format. The older
+`dateFilter` field remains accepted for compatibility. Responses include `period`, `startDate`,
+`endDate`, `partial`, and `data`; ranges older than Shopify's available 60 days are marked
+`partial: true` with a note. No data is saved.
+
 New, under `/api/admin` (so `authenticate` + `requireAdmin` already ran - see `app.ts`):
 
 - `POST /api/admin/employees` - creates an employee account. The JSON body accepts the
@@ -155,8 +170,8 @@ New, under `/api/admin` (so `authenticate` + `requireAdmin` already ran - see `a
   value returns HTTP 400. The created employee response includes the assigned `role`.
 
 - `GET /api/admin/orders/today` - today's orders straight from the DB (rows, count, total value).
-- `GET /api/admin/daily-exports?from=&to=&limit=&after=&before=` - historical consolidated export
-  records only; no new consolidated files or records are generated. Uses this app's existing cursor pagination (`after`/`before`), not `?page=` -
+- `GET /api/admin/daily-exports?from=&to=&limit=&after=&before=` - daily consolidated admin export
+  records. Uses this app's existing cursor pagination (`after`/`before`), not `?page=` -
   every other list endpoint in this app already uses that contract (see `utils/paginate.ts`'s own
   comment: "There is no `?page=` any more"), so this stays consistent with them instead of
   introducing a second convention.
@@ -172,11 +187,10 @@ behaviour (`middleware/requireAdmin.ts`: "the admin routes simply do not exist f
 403 in the client contract"), applied here for consistency with every other admin route rather than
 introduced as a one-off exception.
 
-## Historical verification notes (2026-10-09, before consolidated generation was disabled)
+## Historical verification notes (2026-10-09)
 
-The operational verification notes below describe the older export behavior and are retained only
-as historical context. Current verification is covered by `test/orderExport.test.ts`; it asserts
-employee-only generation and does not create `exports/daily/all`.
+The operational verification notes below describe earlier export behavior and are retained only as
+historical context. Current verification is covered by `test/orderExport.test.ts`.
 
 - Placed a real two-SKU order (qty 2 + qty 1, both ₹299) through `POST /api/map/create-order` →
   landed in the per-employee sheet as exactly 2 rows under the same Id, Quantity 2 and 1, Total

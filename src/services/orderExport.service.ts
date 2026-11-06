@@ -375,6 +375,16 @@ export interface EmployeeExportFile extends ExportFile {
   cloudinary: CloudinaryRawFile;
 }
 
+export interface AdminDailyRunResult {
+  exportDate: string;
+  created: boolean;
+  skipped: boolean;
+  noOrders: boolean;
+  orderCount: number;
+  excludedOrders: number;
+  excludedByReason: Omit<ExcludedOrderSummary, 'total'>;
+}
+
 function isDailyExportDuplicateError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { name?: unknown; parent?: { errno?: unknown; code?: unknown } };
@@ -445,33 +455,101 @@ export interface DailyRunResult {
 // Consolidated admin report: intentionally queries the complete order table, not the admin
 // email and not the users table. This includes admin orders and Shopify-synced rows whose
 // employee account may no longer exist. AdminDailyExport's unique date key makes retries safe.
-export async function runDailyAdminExport(dateInput: string | Date | number): Promise<{ exportDate: string; created: boolean; orderCount: number }> {
+// Only qualifying orders produce a workbook or database row; an empty day leaves no artifact.
+export async function runDailyAdminExport(dateInput: string | Date | number): Promise<AdminDailyRunResult> {
   const { start, end } = dayBounds(dateInput);
   const exportDate = toDateOnly(start);
   const existing = await AdminDailyExport.findOne({ where: { exportDate } });
-  if (existing) return { exportDate, created: false, orderCount: existing.orderCount };
+  if (existing) {
+    return {
+      exportDate,
+      created: false,
+      skipped: true,
+      noOrders: false,
+      orderCount: existing.orderCount,
+      excludedOrders: 0,
+      excludedByReason: { cancelled: 0, voided: 0, refunded: 0 },
+    };
+  }
 
   const orders = await Order.findAll({
     where: { createdAt: { [Op.gte]: start, [Op.lte]: end } },
     include: [{ model: OrderLineItem, as: 'lineItems' }],
     order: [['createdAt', 'ASC']],
   });
-  const usersByEmail = await buildUsersByEmail(orders.map((order) => order.email));
+  const excluded = summarizeExcludedOrders(orders);
+  const includedOrders = orders.filter((order) => !isExcludedOrder(order));
+  const excludedByReason = { cancelled: excluded.cancelled, voided: excluded.voided, refunded: excluded.refunded };
+  if (!includedOrders.length) {
+    return {
+      exportDate,
+      created: false,
+      skipped: false,
+      noOrders: true,
+      orderCount: 0,
+      excludedOrders: excluded.total,
+      excludedByReason,
+    };
+  }
+
+  // Orders already carry the employee display name. Avoid loading the users table here: the
+  // admin job must remain one bounded order query even when the database has 10,000+ users.
+  const usersByEmail = new Map<string, UserInstance>();
   const workbook = new ExcelJS.Workbook();
   const stats = buildOrdersWorksheet(workbook, orders, usersByEmail, formatDateOnly(exportDate));
   const fileName = `${exportDate}_all-orders.xlsx`;
-  await fs.promises.mkdir(allOrdersExportDir(), { recursive: true });
-  await workbook.xlsx.writeFile(path.join(allOrdersExportDir(), fileName));
+  const workbookBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+  // Claim the date before uploading. A second worker then sees the unique row and never uploads
+  // a competing file. If upload fails, remove the claim so a later run can retry safely.
+  let record: InstanceType<typeof AdminDailyExport>;
   try {
-    await AdminDailyExport.create({ exportDate, orderCount: stats.includedCount, fileName });
+    record = await AdminDailyExport.create({
+      exportDate,
+      orderCount: stats.includedCount,
+      fileName,
+      storageProvider: 'cloudinary',
+    });
   } catch (err) {
     if (!isDailyExportDuplicateError(err)) throw err;
-    // Another cron worker owns this date. Both workers write the same deterministic workbook;
-    // never delete the shared path owned by the winner.
     const winner = await AdminDailyExport.findOne({ where: { exportDate } });
-    return { exportDate, created: false, orderCount: winner?.orderCount || 0 };
+    return {
+      exportDate,
+      created: false,
+      skipped: true,
+      noOrders: false,
+      orderCount: winner?.orderCount || 0,
+      excludedOrders: excluded.total,
+      excludedByReason,
+    };
   }
-  return { exportDate, created: true, orderCount: stats.includedCount };
+
+  let uploadedCloudinary: CloudinaryRawFile | null = null;
+  try {
+    uploadedCloudinary = await dailyExportStorage.upload(workbookBuffer, `thcm/admin-daily-exports/${exportDate}`);
+    await record.update({
+      cloudinaryPublicId: uploadedCloudinary.publicId,
+      cloudinaryResourceType: uploadedCloudinary.resourceType,
+      cloudinaryType: uploadedCloudinary.type,
+      cloudinaryVersion: uploadedCloudinary.version,
+      cloudinaryBytes: uploadedCloudinary.bytes,
+      cloudinaryFormat: uploadedCloudinary.format,
+    });
+  } catch (err) {
+    if (uploadedCloudinary) await dailyExportStorage.destroy(uploadedCloudinary).catch(() => undefined);
+    await record.destroy().catch(() => undefined);
+    throw err;
+  }
+
+  return {
+    exportDate,
+    created: true,
+    skipped: false,
+    noOrders: false,
+    orderCount: stats.includedCount,
+    excludedOrders: excluded.total,
+    excludedByReason,
+  };
 }
 
 // Runs once daily (see src/jobs/employeeDailyExportCron.ts). The employee list and all orders for

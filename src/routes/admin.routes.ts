@@ -19,10 +19,10 @@ router.post('/orders/backfill-shopify', ordersController.backfillShopifyOrders);
 // Today's orders, live from the DB (not a file).
 router.get('/orders/today', exportsController.getTodayOrders);
 
-// Historical all-employees daily export files (distinct from the per-employee
-// /api/sap/daily-exports, which this does not touch). New consolidated files are not generated.
-// Mounted under /api/admin, so authenticate + requireAdmin already
-// ran (see app.ts) - an employee JWT here gets requireAdmin's 404, same as every other admin route.
+// All-employees daily export files (distinct from the per-employee
+// /api/sap/daily-exports, which this does not touch). Historical local files remain readable.
+// Mounted under /api/admin, so authenticate + requireAdmin already ran (see app.ts) - an
+// employee JWT here gets requireAdmin's 404, same as every other admin route.
 router.get('/daily-exports', exportsController.listAdminDailyExports);
 router.get('/daily-exports/:id', exportsController.getAdminDailyExport);
 router.get('/daily-exports/:id/download', exportsController.downloadAdminDailyExport);

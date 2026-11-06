@@ -1,18 +1,17 @@
 // npm run export:daily -- [--date=YYYY-MM-DD] [--force] [--dry-run]
-// Manual trigger for the daily export - the exact same logic the cron (src/jobs/
-// employeeDailyExportCron.ts) runs, for one explicit day instead of waiting for 00:05 IST.
+// Manual trigger for the admin consolidated daily export - the exact same logic the cron
+// (src/jobs/employeeDailyExportCron.ts) runs, for one explicit day instead of waiting for 00:05 IST.
 //   --date=   defaults to yesterday, same default the cron uses.
-//   --force   deletes any existing DailyExport/AdminDailyExport record (and its file) for that
-//             date first, then regenerates - the normal run always skips a date it already has.
-//   --dry-run computes what would happen - how many files would be created, how many employees
-//             already have a record, how many have no non-cancelled order, how many orders would
-//             be excluded as cancelled/voided/refunded - without writing any file or DB row.
+//   --force   deletes any existing AdminDailyExport record (and its file) for that date first,
+//             then regenerates - the normal run always skips a date it already has.
+//   --dry-run reports qualifying/excluded orders and whether one consolidated file would be made,
+//             without writing any file or DB row.
 import fs from 'fs';
 import path from 'path';
 import { Op } from 'sequelize';
 import connectDB from '../config/db';
-import { Order, OrderLineItem, User, DailyExport, AdminDailyExport } from '../models';
-import { runDailyEmployeeExports, isExcludedOrder, summarizeExcludedOrders, dayBounds, toDateOnly, dailyExportDir, allOrdersExportDir, previousDateInIST } from '../services/orderExport.service';
+import { Order, OrderLineItem, AdminDailyExport } from '../models';
+import { runDailyAdminExport, isExcludedOrder, summarizeExcludedOrders, dayBounds, toDateOnly, allOrdersExportDir, previousDateInIST } from '../services/orderExport.service';
 import { cloudinaryFileFromRecord, destroyPrivateRawFile } from '../services/cloudinaryStorage.service';
 import { errorMessage } from '../utils/errors';
 
@@ -34,55 +33,32 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function removeExistingRecords(exportDate: string): Promise<void> {
-  const perEmployee = await DailyExport.findAll({ where: { exportDate } });
-  for (const record of perEmployee) {
-    const cloudinaryFile = cloudinaryFileFromRecord(record);
-    if (cloudinaryFile) await destroyPrivateRawFile(cloudinaryFile).catch(() => undefined);
-    else await fs.promises.unlink(path.join(dailyExportDir(), record.fileName)).catch(() => undefined);
-  }
-  if (perEmployee.length) await DailyExport.destroy({ where: { exportDate } });
-
-  const admin = await AdminDailyExport.findOne({ where: { exportDate } });
-  if (admin) {
-    await fs.promises.unlink(path.join(allOrdersExportDir(), admin.fileName)).catch(() => undefined);
-    await admin.destroy();
-  }
+  const record = await AdminDailyExport.findOne({ where: { exportDate } });
+  if (!record) return;
+  const cloudinaryFile = cloudinaryFileFromRecord(record);
+  if (cloudinaryFile) await destroyPrivateRawFile(cloudinaryFile).catch(() => undefined);
+  else await fs.promises.unlink(path.join(allOrdersExportDir(), record.fileName)).catch(() => undefined);
+  await record.destroy();
 }
 
-// Mirrors runDailyEmployeeExports' own decisions, read-only.
+// Mirrors runDailyAdminExport's own decisions, read-only.
 async function dryRun(date: string | Date): Promise<void> {
   const { start, end } = dayBounds(date);
   const exportDate = toDateOnly(start);
-  const employees = await User.findAll({ attributes: ['email'] });
-  const employeeEmails = employees.map(({ email }) => email);
-  const existingRecords = employeeEmails.length
-    ? await DailyExport.findAll({ where: { exportDate, email: { [Op.in]: employeeEmails } } })
-    : [];
-  const existingEmails = new Set(existingRecords.map((record) => record.email));
-  const orders = employeeEmails.length
-    ? await Order.findAll({
-        where: { email: { [Op.in]: employeeEmails }, createdAt: { [Op.gte]: start, [Op.lte]: end } },
-        include: [{ model: OrderLineItem, as: 'lineItems' }],
-      })
-    : [];
-  const qualifyingByEmail = new Set(orders.filter((order) => Boolean(order.email) && !isExcludedOrder(order)).map((order) => order.email as string));
+  const existing = await AdminDailyExport.findOne({ where: { exportDate } });
+  const orders = await Order.findAll({
+    where: { createdAt: { [Op.gte]: start, [Op.lte]: end } },
+    include: [{ model: OrderLineItem, as: 'lineItems' }],
+  });
+  const qualifyingOrders = orders.filter((order) => !isExcludedOrder(order));
   const excluded = summarizeExcludedOrders(orders);
 
-  let wouldCreate = 0;
-  const alreadyHaveRecord = existingEmails.size;
-  let noOrders = 0;
-
-  for (const email of employeeEmails) {
-    if (existingEmails.has(email)) continue;
-    if (qualifyingByEmail.has(email)) wouldCreate += 1;
-    else noOrders += 1;
-  }
-
+  const wouldCreate = !existing && qualifyingOrders.length > 0;
   console.log(
-    `[dry-run] ${exportDate}: would create ${wouldCreate} file(s), ${alreadyHaveRecord} already have a record, ` +
-      `${noOrders} have no qualifying order, ${excluded.total} order(s) excluded ` +
-      `(cancelled ${excluded.cancelled}, voided ${excluded.voided}, refunded ${excluded.refunded}) ` +
-      `(of ${employees.length} employees). No file or DB row was written.`
+    `[dry-run] ${exportDate}: ${wouldCreate ? 'would create 1 consolidated file' : existing ? 'already has a consolidated record' : 'no file would be created'}, ` +
+      `${qualifyingOrders.length} qualifying order(s), ${excluded.total} order(s) excluded ` +
+      `(cancelled ${excluded.cancelled}, voided ${excluded.voided}, refunded ${excluded.refunded}). ` +
+      `No file or DB row was written.`
   );
 }
 
@@ -102,10 +78,11 @@ async function main(): Promise<void> {
     await removeExistingRecords(exportDate);
   }
 
-  const result = await runDailyEmployeeExports(date);
+  const result = await runDailyAdminExport(date);
   console.log(
-    `[export:daily] ${result.exportDate}: ${result.created} created, ${result.skipped} already existed, ` +
-      `${result.noOrders} had no orders, ${result.failed} failed (of ${result.totalEmployees} employees)`
+    `[export:daily] ${result.exportDate}: ` +
+      `${result.noOrders ? 'no orders' : result.created ? `created 1 consolidated file with ${result.orderCount} orders` : `already existed with ${result.orderCount} orders`}, ` +
+      `${result.excludedOrders} excluded`
   );
 }
 

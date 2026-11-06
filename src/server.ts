@@ -2,7 +2,7 @@ import app from './app';
 import { port, nodeEnv, map, shopify, jwtSecret, admin, cloudinary } from './config/env';
 import { alertServerError } from './services/alert';
 import connectDB from './config/db';
-import { ensureOrderColumns, ensureUserColumns, ensureOrderDetailColumns, ensureDailyExportColumns } from './config/ensureSchema';
+import { ensureOrderColumns, ensureUserColumns, ensureOrderDetailColumns, ensureDailyExportColumns, ensureAdminDailyExportColumns } from './config/ensureSchema';
 import { AdminDailyExport } from './models';
 import scheduleEmployeeDailyExport from './jobs/employeeDailyExportCron';
 import { sanitizedCloudinaryError, verifyCloudinaryConnection } from './services/cloudinaryStorage.service';
@@ -56,6 +56,7 @@ async function start(): Promise<void> {
   // New table, no migration tool/schema.sql in this project (see config/ensureSchema.ts's own
   // comment) - a model-scoped sync() only creates it if missing, never touches any other table.
   await AdminDailyExport.sync();
+  await ensureAdminDailyExportColumns();
   scheduleEmployeeDailyExport();
   // scheduleOrderReconcile();
 

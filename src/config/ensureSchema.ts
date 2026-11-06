@@ -257,3 +257,28 @@ export async function ensureDailyExportColumns(): Promise<void> {
     }
   }
 }
+
+// Additive upgrade for consolidated admin export storage metadata. Existing historical
+// consolidated rows remain local and readable; new rows can point to Cloudinary private raw files.
+export async function ensureAdminDailyExportColumns(): Promise<void> {
+  const [rows] = (await sequelize.query(
+    "SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin_daily_exports'"
+  )) as [{ name: string }[], unknown];
+  if (!rows.length) return;
+  const have = new Set(rows.map((row) => row.name));
+  const additions: [string, string][] = [
+    ['storage_provider', "VARCHAR(32) NOT NULL DEFAULT 'local'"],
+    ['cloudinary_public_id', 'VARCHAR(500) NULL'],
+    ['cloudinary_resource_type', 'VARCHAR(32) NULL'],
+    ['cloudinary_type', 'VARCHAR(32) NULL'],
+    ['cloudinary_version', 'BIGINT NULL'],
+    ['cloudinary_bytes', 'BIGINT NULL'],
+    ['cloudinary_format', 'VARCHAR(32) NULL'],
+  ];
+  for (const [name, ddl] of additions) {
+    if (!have.has(name)) {
+      await sequelize.query(`ALTER TABLE admin_daily_exports ADD COLUMN ${name} ${ddl}`);
+      console.log(`[schema] added admin_daily_exports.${name}`);
+    }
+  }
+}

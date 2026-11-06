@@ -12,6 +12,8 @@ import authenticate from './middleware/authenticate';
 import requireAdmin from './middleware/requireAdmin';
 import { notFound, errorHandler } from './middleware/errorHandler';
 import requestId from './middleware/requestId';
+import { requireApiKey } from './middleware/apiKeyAuth';
+import trendingProductsRoutes from './routes/trendingProducts.routes';
 
 const app = express();
 
@@ -55,6 +57,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Server is healthy', timestamp: new Date().toISOString() });
 });
 app.use('/api/auth', authRoutes);
+app.use('/api', requireApiKey, trendingProductsRoutes);
 // Shopify-related MAP routes use the MAP API key (x-api-key). Dashboard order reads/streams
 // accept that existing key or a signed-in employee JWT; see dashboard.routes.ts.
 app.use('/api/map', mapRoutes);
