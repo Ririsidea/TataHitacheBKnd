@@ -151,6 +151,25 @@ Address column, numeric line totals, and a final bold `Total` row. Use
 
 ## Routes
 
+`POST /api/map/create-order` accepts `mapNo` directly from the API consumer. It is not stored in
+the employee database and is not accepted by employee create/update APIs. The existing employee
+name and `employeeId` are resolved using the employee email, while the request's `mapNo` is used
+only in the Shopify order note as separate lines:
+
+```text
+Employee Name: Rahul
+MAP NO: MAP-001
+Employee ID: 12345
+```
+
+### MAP product eligibility
+
+The catalog and inventory endpoint (`GET /api/map/stock`) includes only products carrying the
+exact Shopify tag `Map_products` (tag matching is case-sensitive and whitespace-trimmed).
+`GET /api/map/product/:key` applies the same rule. The create-order SKU lookup and the
+cancel/return path also enforce it server-side, so a product without that tag cannot become
+orderable or returnable through a direct API request.
+
 ### Trending products
 
 `POST /api/trending-products` is available with the existing `x-api-key` authentication. It

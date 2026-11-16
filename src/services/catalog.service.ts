@@ -2,6 +2,7 @@ import * as shopify from './shopify/client';
 import { mapCatalogVariant, mapProductDetail, type ProductDetail, type ProductMatch } from './shopify/productMapper';
 import { buildIndex, type CatalogIndex } from './catalogSearch';
 import type { CatalogVariantNode } from '../types/shopify';
+import { isMapProduct } from '../utils/mapProductEligibility';
 
 // The searchable catalog. Mapping ~thousands of variants and building the search text is done
 // once per copy of the Shopify catalog (the cache hands back the same array until it refreshes),
@@ -27,7 +28,7 @@ const ID_PATTERN = /^\d{1,19}$/;
 export async function lookupProduct(key: string): Promise<ProductDetail | null> {
   const load = async (productId: string | null, match: ProductMatch): Promise<ProductDetail | null> => {
     const product = productId ? await shopify.getProductDetail(productId) : null;
-    return product ? mapProductDetail(product, match) : null;
+    return product && isMapProduct(product.tags) ? mapProductDetail(product, match) : null;
   };
 
   if (ID_PATTERN.test(key)) {

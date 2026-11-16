@@ -153,7 +153,7 @@ export interface SkuVariantNode {
   inventoryQuantity: number | null;
   inventoryPolicy?: string;
   inventoryItem: { id: string };
-  product?: { id: string; title: string };
+  product?: { id: string; title: string; tags?: string[] };
 }
 
 export interface ProductVariantDetailNode {

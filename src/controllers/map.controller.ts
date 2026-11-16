@@ -214,6 +214,11 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     const body = (req.body ?? {}) as Record<string, unknown>;
     const { items, shippingAddress } = body as { items?: unknown; shippingAddress?: Record<string, unknown> };
     const phone = body.phone as string | undefined;
+    const mapNo = body.mapNo === undefined || body.mapNo === null ? '' : body.mapNo;
+    if (typeof mapNo !== 'string' || mapNo.trim().length > 100) {
+      res.status(400).json({ success: false, message: 'mapNo must be a string of at most 100 characters' });
+      return;
+    }
 
     if (!Array.isArray(items) || items.length === 0) {
       res.status(400).json({ success: false, message: 'At least one item is required' });
@@ -239,10 +244,12 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       res.status(400).json({ success: false, message: identity.error });
       return;
     }
-    const employee: { name: string; email: string; phone: string | undefined } = {
+    const employee: { name: string; email: string; phone: string | undefined; mapNo: string; employeeId: string | null } = {
       name: identity.name,
       email: identity.email,
       phone: phone || undefined,
+      mapNo: mapNo.trim(),
+      employeeId: null,
     };
     const { channel } = identity;
 
@@ -253,6 +260,9 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     // come pre-filled.
     const profile = await User.findOne({ where: { email: employee.email } });
     if (profile) {
+      // The employee record remains authoritative for the existing employee identity fields.
+      employee.name = profile.name || employee.name;
+      employee.employeeId = profile.employeeId;
       if (phone && phone !== profile.phone) {
         profile.phone = phone;
         await profile.save();
@@ -280,11 +290,16 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       line_items: lineItemsForShopify,
       shipping_address: shippingAddress,
       email: employee.email,
-      note: `Employee: ${employee.name} <${employee.email}>`,
+      note: [
+        `Employee Name: ${employee.name}`,
+        `MAP NO: ${employee.mapNo || ''}`,
+        `Employee ID: ${employee.employeeId || ''}`,
+      ].join('\n'),
       note_attributes: [
         { name: 'employeeName', value: employee.name || '' },
         { name: 'employeeEmail', value: employee.email },
         { name: 'employeePhone', value: employee.phone || '' },
+        { name: 'employeeId', value: employee.employeeId || '' },
         { name: 'channel', value: channel },
       ],
       tags: 'MAP',
@@ -443,6 +458,18 @@ export async function cancelOrder(req: Request, res: Response, next: NextFunctio
       return;
     }
 
+    // Cancellation is the MAP return path. Every line item must still resolve to a Shopify
+    // product carrying the exact Map_products tag; the catalog filter is not sufficient because
+    // this endpoint is also callable directly with an order id.
+    const lineItems = order.lineItems ?? [];
+    const skus = lineItems.map((li) => li.sku).filter((sku): sku is string => Boolean(sku));
+    const returnableVariants = skus.length ? await shopify.findVariantsBySku(skus) : [];
+    const returnableSkus = new Set(returnableVariants.map((variant) => String(variant.sku)));
+    if (!lineItems.length || lineItems.some((lineItem) => !lineItem.sku || !returnableSkus.has(String(lineItem.sku)))) {
+      res.status(409).json({ success: false, message: 'This order contains products that are not eligible for return' });
+      return;
+    }
+
     // A fulfilled order is final and locked. Refused before anything is claimed or sent to
     // Shopify, so the order is left exactly as it is.
     if (isOrderFulfilled(order)) {
@@ -507,11 +534,9 @@ export async function cancelOrder(req: Request, res: Response, next: NextFunctio
     // Only the quantities actually recorded against this order's own line items are
     // restored, and only once, since the gate above already guarantees this whole
     // handler runs at most one time per order.
-    const lineItems = order.lineItems ?? [];
-    const skus = lineItems.map((li) => li.sku).filter(Boolean);
     if (skus.length) {
       try {
-        const variants = await shopify.findVariantsBySku(skus);
+        const variants = returnableVariants;
         const restockItems = lineItems
           .filter((li) => li.sku)
           .map((li) => {

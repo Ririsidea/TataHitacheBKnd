@@ -10,6 +10,7 @@ import type {
   Connection,
   PageInfo,
 } from '../../types/shopify';
+import { isMapProduct } from '../../utils/mapProductEligibility';
 
 if (!shopify.storeDomain) throw new Error('SHOPIFY_STORE_DOMAIN is not set');
 const storeDomain = shopify.storeDomain.replace(/^https?:\/\//, '');
@@ -115,7 +116,9 @@ async function fetchCatalogFromShopify(): Promise<CatalogVariantNode[]> {
       CATALOG_VARIANTS_QUERY,
       { cursor }
     );
-    for (const edge of data.productVariants.edges) variants.push(edge.node);
+    for (const edge of data.productVariants.edges) {
+      if (isMapProduct(edge.node.product.tags)) variants.push(edge.node);
+    }
     const { hasNextPage, endCursor } = data.productVariants.pageInfo;
     cursor = hasNextPage ? endCursor : null;
   } while (cursor);
@@ -206,7 +209,7 @@ const VARIANTS_BY_SKU_QUERY = `
           inventoryQuantity
           inventoryPolicy
           inventoryItem { id }
-          product { id title }
+          product { id title tags }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -230,7 +233,9 @@ async function findVariantsBySkuChunk(skus: string[]): Promise<SkuVariantNode[]>
       VARIANTS_BY_SKU_QUERY,
       { query, cursor }
     );
-    for (const edge of data.productVariants.edges) nodes.push(edge.node);
+    for (const edge of data.productVariants.edges) {
+      if (isMapProduct(edge.node.product?.tags)) nodes.push(edge.node);
+    }
     const { hasNextPage, endCursor } = data.productVariants.pageInfo;
     cursor = hasNextPage ? endCursor : null;
   } while (cursor);
